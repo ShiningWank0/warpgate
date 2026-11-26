@@ -43,6 +43,22 @@ pub async fn bind_server(
     address: ListenEndpoint,
     proxy_protocol: bool,
 ) -> Result<BoxFuture<'static, Result<()>>> {
+    {
+        let config = services.config.lock().await;
+        let ssh = &config.store.ssh;
+        if let Some(ttl) = ssh.ticket_max_ttl {
+            anyhow::ensure!(
+                !ttl.is_zero()
+                    && ssh
+                        .session_open_timeout
+                        .is_some_and(|duration| !duration.is_zero())
+                    && ssh
+                        .session_max_age
+                        .is_some_and(|duration| !duration.is_zero()),
+                "SSH ticket_max_ttl requires positive session_open_timeout and session_max_age"
+            );
+        }
+    }
     let russh_config_init = Arc::new({
         RusshConfigInit {
             keys: load_host_keys(&services.db).await?,
@@ -129,6 +145,7 @@ async fn _handle_connection(
         }
     };
 
+    let methods = get_allowed_auth_methods(&services).await?;
     let russh_config = {
         let config = services.config.lock().await;
 
@@ -144,7 +161,7 @@ async fn _handle_connection(
                 + Duration::from_secs(10),
             ),
             keepalive_interval: config.store.ssh.keepalive_interval,
-            methods: get_allowed_auth_methods(&services).await?,
+            methods,
             keys: russh_config_init.keys.clone(),
             event_buffer_size: 100,
             nodelay: true,
@@ -201,6 +218,19 @@ where
 }
 
 pub async fn get_allowed_auth_methods(services: &Services) -> Result<MethodSet> {
+    if services
+        .config
+        .lock()
+        .await
+        .store
+        .ssh
+        .ticket_max_ttl
+        .is_some()
+    {
+        return Ok(MethodSet::from(
+            &[MethodKind::Password, MethodKind::KeyboardInteractive][..],
+        ));
+    }
     let parameters = {
         let db = &services.db;
         Parameters::Entity::get(db).await?

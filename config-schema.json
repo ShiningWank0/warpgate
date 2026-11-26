@@ -113,7 +113,8 @@
         "proxy_protocol": false,
         "session_max_age": null,
         "session_open_timeout": null,
-        "target_handshake_timeout": "30s"
+        "target_handshake_timeout": "30s",
+        "ticket_max_ttl": null
       }
     },
     "sso_providers": {
@@ -540,6 +541,14 @@
           "description": "Deadline for a target to accept the connection and complete key exchange.\nCovers the TCP connect (or the direct-tcpip hop through a jump host) and the\nSSH handshake, but not authentication. Set to `0s` to wait forever.",
           "type": "string",
           "default": "30s"
+        },
+        "ticket_max_ttl": {
+          "description": "Accept only native SSH tickets with one remaining use and at most this issuance lifetime.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         }
       }
     },

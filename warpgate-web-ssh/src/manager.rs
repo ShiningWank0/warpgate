@@ -44,6 +44,17 @@ impl WebSshClientManager {
         authorization: TargetAuthorization,
         remote_address: Option<SocketAddr>,
     ) -> Result<UserSessionId, WarpgateError> {
+        if services
+            .config
+            .lock()
+            .await
+            .store
+            .ssh
+            .ticket_max_ttl
+            .is_some()
+        {
+            return Err(WarpgateError::InvalidTarget);
+        }
         let authorization = authorization.narrow::<TargetSSHOptions>()?;
         let user_id = authorization.user_info().id;
         let username = authorization.user_info().username.clone();
