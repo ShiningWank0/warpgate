@@ -10,6 +10,9 @@
         '/sessions/:id': wrap({
             asyncComponent: () => import('./Session.svelte'),
         }),
+        '/ssh-audit': wrap({
+            asyncComponent: () => import('./SshAudit.svelte'),
+        }),
         '/requests': wrap({
             asyncComponent: () => import('./Requests.svelte'),
         }),
@@ -28,6 +31,10 @@
         {
             title: 'Sessions',
             href: '/status/sessions',
+        },
+        {
+            title: 'SSH audit',
+            href: '/status/ssh-audit',
         },
         {
             title: 'Requests',
