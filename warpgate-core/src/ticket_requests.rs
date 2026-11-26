@@ -217,7 +217,19 @@ pub async fn create_ticket_request(
             resolved_at: Set(None),
             deny_reason: Set(None),
         };
-        let request_model = request.insert(db_conn).await?;
+        let txn = begin_write(db_conn).await?;
+        let request_model = request.insert(&txn).await?;
+        crate::ticket_notifications::enqueue(&txn, request_id).await?;
+        txn.commit().await?;
+
+        info!(
+            target: "audit",
+            _type = "TicketApprovalRequested1",
+            %request_id,
+            user_id = %request_model.user_id,
+            target_id = %request_model.target_id,
+            "Ticket request requires administrator approval"
+        );
 
         info!(
             "Created pending ticket request {} for user {} to target {}",
@@ -306,18 +318,14 @@ pub async fn approve_ticket_request(
         return Err(WarpgateError::from(anyhow!("Target no longer exists")));
     }
 
-    let mut active: TicketRequest::ActiveModel = request.into();
-    active.status = Set(TicketRequestStatus::Approved);
-    active.resolved_by_user_id = Set(admin_user_id);
-    active.resolved_at = Set(Some(OffsetDateTime::now_utc()));
-    let updated = active.update(db_conn).await?;
-
-    info!(
-        "Admin {:?} approved ticket request {}",
-        admin_user_id, request_id
-    );
-
-    Ok(Some(updated))
+    resolve_ticket_request(
+        db,
+        request,
+        TicketRequestStatus::Approved,
+        admin_user_id,
+        None,
+    )
+    .await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -457,19 +465,58 @@ pub async fn deny_ticket_request(
         }
     });
 
-    let mut active: TicketRequest::ActiveModel = request.into();
-    active.status = Set(TicketRequestStatus::Denied);
-    active.resolved_by_user_id = Set(admin_user_id);
-    active.resolved_at = Set(Some(OffsetDateTime::now_utc()));
-    active.deny_reason = Set(reason);
-    let updated = active.update(db_conn).await?;
+    resolve_ticket_request(
+        db,
+        request,
+        TicketRequestStatus::Denied,
+        admin_user_id,
+        reason,
+    )
+    .await
+}
 
+async fn resolve_ticket_request(
+    db: &sea_orm::DatabaseConnection,
+    mut request: TicketRequest::Model,
+    status: TicketRequestStatus,
+    admin_user_id: Option<UserId>,
+    reason: Option<String>,
+) -> Result<Option<TicketRequest::Model>, WarpgateError> {
+    let now = OffsetDateTime::now_utc();
+    let update = TicketRequest::Entity::update_many()
+        .col_expr(TicketRequest::Column::Status, Expr::value(status.clone()))
+        .col_expr(
+            TicketRequest::Column::ResolvedByUserId,
+            Expr::value(admin_user_id),
+        )
+        .col_expr(TicketRequest::Column::ResolvedAt, Expr::value(now))
+        .col_expr(
+            TicketRequest::Column::DenyReason,
+            Expr::value(reason.clone()),
+        )
+        .filter(TicketRequest::Column::Id.eq(request.id))
+        .filter(TicketRequest::Column::Status.eq(TicketRequestStatus::Pending))
+        .exec(db)
+        .await?;
+    if update.rows_affected != 1 {
+        return Ok(None);
+    }
+
+    request.status = status;
+    request.resolved_by_user_id = admin_user_id;
+    request.resolved_at = Some(now);
+    request.deny_reason = reason;
     info!(
-        "Admin {:?} denied ticket request {}",
-        admin_user_id, request_id
+        target: "audit",
+        _type = "TicketApprovalDecided1",
+        request_id = %request.id,
+        user_id = %request.user_id,
+        target_id = %request.target_id,
+        actor_user_id = admin_user_id.map(|id| id.to_string()),
+        approved = request.status == TicketRequestStatus::Approved,
+        "Administrator decided a ticket request"
     );
-
-    Ok(Some(updated))
+    Ok(Some(request))
 }
 
 pub async fn list_ticket_requests(

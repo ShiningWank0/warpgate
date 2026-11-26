@@ -40,6 +40,7 @@ macro_rules! with_every_table_in_order {
             KubernetesSession,
             Recording,
             TicketRequest,
+            TicketRequestNotification,
             TargetRoleAssignment,
             UserRoleAssignment,
             UserAdminRoleAssignment,

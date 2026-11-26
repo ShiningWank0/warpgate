@@ -35,6 +35,7 @@ macro_rules! with_every_entity {
             TargetSession,
             Ticket,
             TicketRequest,
+            TicketRequestNotification,
             User,
             UserAdminRoleAssignment,
             UserLockout,

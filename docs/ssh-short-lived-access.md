@@ -32,3 +32,27 @@ when connecting.
 A forced SSH disconnect ends access through Warpgate. Processes deliberately
 detached on the target can outlive the connection. Use the target's service
 manager or session cgroup policy when detached processes must also end.
+
+## Administrator notifications
+
+Set either or both environment variables on Warpgate and restart the service.
+
+| Environment variable | Value |
+| --- | --- |
+| `WARPGATE_TICKET_APPROVAL_SLACK_WEBHOOK` | Incoming webhook URL for the administrators' Slack channel |
+| `WARPGATE_TICKET_APPROVAL_DISCORD_WEBHOOK` | Incoming webhook URL for the administrators' Discord channel |
+| `WARPGATE_TICKET_APPROVALS_URL` | Optional HTTPS link to the review page, such as `https://gateway.example.net/@warpgate/admin#/status/requests` |
+
+Deploy webhook URLs as secrets. Only requests that go to the approval queue
+generate a delivery. Warpgate retries failed deliveries from its database.
+Delivery is at least once, so providers may show a duplicate if a worker
+restarts after a successful send. The request UUID identifies duplicates.
+
+Administrators review the request in Warpgate. Their decision requires the
+ticket-request permission and is audited. A pending or denied request
+cannot be activated. Configure ticket request visibility to include targets
+outside users' existing roles when such escalation requests are needed.
+
+For a permanent change, review a code change to the user's role assignments
+and apply the approved change through the configuration repository. The
+ticket workflow grants time-limited access to a target.
