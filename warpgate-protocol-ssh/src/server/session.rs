@@ -55,7 +55,7 @@ use super::russh_handler::ServerHandlerEvent;
 use super::service_output::ServiceOutput;
 use super::session_handle::SessionHandleCommand;
 use crate::common::{CHANNEL_ID_ENV, SESSION_ID_ENV};
-use crate::server::get_allowed_auth_methods;
+use crate::server::SessionSettings;
 use crate::server::service_output::{VisualConnectionChainItem, paint_fg};
 use crate::server::target_menu::{MenuEvent, spawn_target_menu_loop};
 use crate::{
@@ -324,21 +324,25 @@ impl std::fmt::Debug for ServerSession {
 }
 
 impl ServerSession {
-    pub async fn start(
+    pub(super) async fn start(
         remote_address: SocketAddr,
         services: &Services,
         server_handle: Arc<Mutex<WarpgateServerHandle>>,
         mut session_handle_rx: UnboundedReceiver<SessionHandleCommand>,
         mut handler_event_rx: UnboundedReceiver<ServerHandlerEvent>,
         client_closer: ClientCloser,
-        accepted_at: Instant,
+        settings: SessionSettings,
     ) -> Result<impl Future<Output = Result<()>> + use<>> {
         let id = server_handle.lock().await.user_session_id();
 
         let span_ = info_span!("SSH", session=%id);
         let _enter = span_.enter();
 
-        let mut rc_handles = RemoteClient::create(id, services.clone())?;
+        let mut rc_handles = RemoteClient::create_with_transport_closer(
+            id,
+            services.clone(),
+            client_closer.clone(),
+        )?;
 
         let (hub, event_sender) = EventHub::setup(EVENT_QUEUE_CAPACITY);
         let control_events = hub
@@ -375,8 +379,8 @@ impl ServerSession {
             disconnect_token: CancellationToken::new(),
             keyboard_interactive_state: None,
             cached_successful_ticket_auth: None,
-            allowed_auth_methods: get_allowed_auth_methods(services).await?,
-            ticket_max_ttl: services.config.lock().await.store.ssh.ticket_max_ttl,
+            allowed_auth_methods: settings.allowed_auth_methods,
+            ticket_max_ttl: settings.ssh.ticket_max_ttl,
             probe: ProbeState::NoAttempt,
             client_closer: Some(client_closer),
         };
@@ -447,18 +451,13 @@ impl ServerSession {
             }
         })?;
 
-        let (inactivity_timeout, open_timeout, max_age) = {
-            let config = services.config.lock().await;
-            let ssh = &config.store.ssh;
-            (
-                ssh.inactivity_timeout,
-                ssh.session_open_timeout,
-                ssh.session_max_age,
-            )
-        };
+        let inactivity_timeout = settings.ssh.inactivity_timeout;
+        let open_timeout = settings.ssh.session_open_timeout;
+        let max_age = settings.ssh.session_max_age;
         let mut deadline = open_timeout
             .map(|duration| {
-                accepted_at
+                settings
+                    .accepted_at
                     .checked_add(duration)
                     .context("SSH session_open_timeout is too large")
             })

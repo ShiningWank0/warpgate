@@ -7,13 +7,13 @@ use futures::future::BoxFuture;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
-/// Ends a client connection from outside russh.
+/// Ends an SSH transport from outside russh.
 ///
 /// russh cannot send anything while its loop is parked in a write that the
 /// client never drains. Closing wakes that write: reads return end of
 /// stream and writes fail with `BrokenPipe`. russh then ends the session
 /// and drops the socket
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ClientCloser {
     cancel: CancellationToken,
 }

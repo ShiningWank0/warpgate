@@ -1,6 +1,6 @@
 mod channel_registry;
 mod channel_writer;
-mod client_closer;
+pub(crate) mod client_closer;
 mod event_intake;
 mod russh_handler;
 mod service_output;
@@ -24,8 +24,8 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time::Instant;
 use tracing::*;
-use warpgate_common::ListenEndpoint;
 use warpgate_common::helpers::net::accept_loop;
+use warpgate_common::{ListenEndpoint, SshConfig};
 use warpgate_core::{Services, State, UserSessionStateInit};
 use warpgate_db_entities::Parameters;
 
@@ -43,22 +43,7 @@ pub async fn bind_server(
     address: ListenEndpoint,
     proxy_protocol: bool,
 ) -> Result<BoxFuture<'static, Result<()>>> {
-    {
-        let config = services.config.lock().await;
-        let ssh = &config.store.ssh;
-        if let Some(ttl) = ssh.ticket_max_ttl {
-            anyhow::ensure!(
-                !ttl.is_zero()
-                    && ssh
-                        .session_open_timeout
-                        .is_some_and(|duration| !duration.is_zero())
-                    && ssh
-                        .session_max_age
-                        .is_some_and(|duration| !duration.is_zero()),
-                "SSH ticket_max_ttl requires positive session_open_timeout and session_max_age"
-            );
-        }
-    }
+    read_ssh_config(&services).await?;
     let russh_config_init = Arc::new({
         RusshConfigInit {
             keys: load_host_keys(&services.db).await?,
@@ -86,6 +71,37 @@ pub async fn bind_server(
     .boxed())
 }
 
+async fn read_ssh_config(services: &Services) -> Result<SshConfig> {
+    let ssh = services.config.lock().await.store.ssh.clone();
+    if let Some(ttl) = ssh.ticket_max_ttl {
+        anyhow::ensure!(
+            !ttl.is_zero()
+                && ssh
+                    .session_open_timeout
+                    .is_some_and(|duration| !duration.is_zero())
+                && ssh
+                    .session_max_age
+                    .is_some_and(|duration| !duration.is_zero()),
+            "SSH ticket_max_ttl requires positive session_open_timeout and session_max_age"
+        );
+    }
+    let now = Instant::now();
+    anyhow::ensure!(
+        [ssh.session_open_timeout, ssh.session_max_age]
+            .into_iter()
+            .flatten()
+            .all(|duration| now.checked_add(duration).is_some()),
+        "SSH session deadline is too large"
+    );
+    Ok(ssh)
+}
+
+pub(super) struct SessionSettings {
+    accepted_at: Instant,
+    ssh: SshConfig,
+    allowed_auth_methods: MethodSet,
+}
+
 async fn _handle_connection(
     services: Services,
     russh_config_init: Arc<RusshConfigInit>,
@@ -93,6 +109,8 @@ async fn _handle_connection(
     remote_address: SocketAddr,
 ) -> Result<()> {
     let accepted_at = Instant::now();
+    let ssh = read_ssh_config(&services).await?;
+    let methods = get_allowed_auth_methods(&services, ssh.ticket_max_ttl.is_some()).await?;
     let (session_handle, session_handle_rx) = SSHSessionHandle::new();
 
     let client_closer = ClientCloser::default();
@@ -134,7 +152,11 @@ async fn _handle_connection(
         session_handle_rx,
         event_rx,
         client_closer,
-        accepted_at,
+        SessionSettings {
+            accepted_at,
+            ssh: ssh.clone(),
+            allowed_auth_methods: methods.clone(),
+        },
     )
     .await
     {
@@ -145,22 +167,19 @@ async fn _handle_connection(
         }
     };
 
-    let methods = get_allowed_auth_methods(&services).await?;
     let russh_config = {
-        let config = services.config.lock().await;
-
         russh::server::Config {
             auth_rejection_time: Duration::from_secs(1),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             inactivity_timeout: Some(
-                config.store.ssh.inactivity_timeout
+                ssh.inactivity_timeout
                 // There is no traffic during admin approval hold that would
                 // reset the inactivity timer, so the timeout needs to be at least that long
                 + services.admin_approval_timeout().await?
                 // Extra time for the "closing due to inactivity" message to be sent
                 + Duration::from_secs(10),
             ),
-            keepalive_interval: config.store.ssh.keepalive_interval,
+            keepalive_interval: ssh.keepalive_interval,
             methods,
             keys: russh_config_init.keys.clone(),
             event_buffer_size: 100,
@@ -217,16 +236,8 @@ where
     ret
 }
 
-pub async fn get_allowed_auth_methods(services: &Services) -> Result<MethodSet> {
-    if services
-        .config
-        .lock()
-        .await
-        .store
-        .ssh
-        .ticket_max_ttl
-        .is_some()
-    {
+async fn get_allowed_auth_methods(services: &Services, ticket_only: bool) -> Result<MethodSet> {
+    if ticket_only {
         return Ok(MethodSet::from(
             &[MethodKind::Password, MethodKind::KeyboardInteractive][..],
         ));

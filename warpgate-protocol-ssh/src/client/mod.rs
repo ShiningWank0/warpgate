@@ -21,6 +21,7 @@ use russh::client::{AuthResult, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKey};
 use russh::{MethodKind, Preferred, Sig, kex, mac};
 use serde::Serialize;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc::{
     Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
 };
@@ -37,6 +38,7 @@ use warpgate_core::{AdmittedTarget, ConfigProvider, Services};
 
 use self::handler::ClientHandlerEvent;
 use super::{ChannelOperation, DirectTCPIPParams};
+use crate::server::client_closer::ClientCloser;
 use crate::{ForwardedStreamlocalParams, ForwardedTcpIpParams, load_client_keys};
 
 #[derive(Debug, thiserror::Error)]
@@ -347,6 +349,7 @@ impl fmt::Debug for Connection {
 
 struct Connector {
     id: UserSessionId,
+    transport_closer: ClientCloser,
     tx: Sender<RCEvent>,
     services: Services,
     /// Who to name in a certificate key ID when `id` is not a session.
@@ -355,6 +358,7 @@ struct Connector {
 
 pub struct RemoteClient {
     id: UserSessionId,
+    transport_closer: ClientCloser,
     tx: Sender<RCEvent>,
     session: Option<Arc<Handle<ClientHandler>>>,
     channel_pipes: Arc<Mutex<HashMap<Uuid, UnboundedSender<ChannelOperation>>>>,
@@ -379,6 +383,14 @@ pub struct RemoteClientHandles {
 
 impl RemoteClient {
     pub fn create(id: UserSessionId, services: Services) -> io::Result<RemoteClientHandles> {
+        Self::create_with_transport_closer(id, services, ClientCloser::default())
+    }
+
+    pub(crate) fn create_with_transport_closer(
+        id: UserSessionId,
+        services: Services,
+        transport_closer: ClientCloser,
+    ) -> io::Result<RemoteClientHandles> {
         let (event_tx, event_rx) = channel(1024);
         let (command_tx, mut command_rx) = unbounded_channel();
         let (abort_tx, abort_rx) = unbounded_channel();
@@ -388,6 +400,7 @@ impl RemoteClient {
 
         let mut this = Self {
             id,
+            transport_closer,
             tx: event_tx,
             session: None,
             channel_pipes: Arc::new(Mutex::new(HashMap::new())),
@@ -690,6 +703,7 @@ impl RemoteClient {
     fn connector(&self, requested_by: Option<String>) -> Connector {
         Connector {
             id: self.id,
+            transport_closer: self.transport_closer.clone(),
             tx: self.tx.clone(),
             services: self.services.clone(),
             requested_by,
@@ -878,7 +892,20 @@ impl Connector {
             services: self.services.clone(),
             session_id: self.id,
         };
-        let fut = russh::client::connect(config, address, handler);
+        let fut = async {
+            let socket = TcpStream::connect(address)
+                .await
+                .map_err(russh::Error::from)?;
+            if config.nodelay
+                && let Err(error) = socket.set_nodelay(true)
+            {
+                warn!(%error, "Setting TCP_NODELAY on the SSH target socket failed");
+            }
+            // Every jump is tunnelled through this first transport, so cancelling
+            // it cuts the entire chain even when a peer isn't reading.
+            russh::client::connect_stream(config, self.transport_closer.guard(socket), handler)
+                .await
+        };
         let Some((mut session, mut active_rx)) = self
             .wait_for_connection(
                 &first,
