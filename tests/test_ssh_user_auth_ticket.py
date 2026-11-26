@@ -154,3 +154,59 @@ class Test:
             assert ssh_client.communicate(timeout=timeout)[0] == b"/bin/sh\n"
             assert ssh_client.returncode == 0
             assert _uses_left(api, ticket_id) == 0
+
+
+def test_short_lived_ticket_policy(processes, wg_c_ed25519_pubkey, timeout):
+    from datetime import datetime, timedelta, timezone
+
+    wg = processes.start_wg(
+        config_patch={
+            "ssh": {
+                "session_open_timeout": "1m",
+                "session_max_age": "1m",
+                "ticket_max_ttl": "5m",
+            }
+        }
+    )
+    ssh_port = processes.start_ssh_server(
+        trusted_keys=[wg_c_ed25519_pubkey.read_text()]
+    )
+    wait_port(wg.http_port, recv=False)
+    wait_port(wg.ssh_port)
+    wait_port(ssh_port)
+
+    with admin_client(f"https://localhost:{wg.http_port}") as api:
+        user, target = _create_user_and_target(api, ssh_port)
+        api.create_password_credential(
+            user.id, sdk.NewPasswordCredential(password="123")
+        )
+        short_ticket = api.create_ticket(
+            sdk.CreateTicketRequest(
+                target_name=target.name,
+                username=user.username,
+                number_of_uses=1,
+                expiry=datetime.now(timezone.utc) + timedelta(minutes=2),
+            )
+        )
+        unlimited_ticket = api.create_ticket(
+            sdk.CreateTicketRequest(target_name=target.name, username=user.username)
+        )
+
+    def connect(selector):
+        client = processes.start_ssh_client(
+            f"{selector}@localhost",
+            "-p",
+            str(wg.ssh_port),
+            "-o",
+            "PreferredAuthentications=password",
+            "echo",
+            "short-lived",
+            password="123",
+        )
+        output, _ = client.communicate(timeout=timeout)
+        return client.returncode, output
+
+    assert connect(f"{user.username}:{target.name}")[0] != 0
+    assert connect(f"ticket-{unlimited_ticket.secret}")[0] != 0
+    assert connect(f"ticket-{short_ticket.secret}") == (0, b"short-lived\n")
+    assert connect(f"ticket-{short_ticket.secret}")[0] != 0

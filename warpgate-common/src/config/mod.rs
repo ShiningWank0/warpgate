@@ -505,6 +505,11 @@ pub struct SshConfig {
     #[schemars(with = "Option<String>")]
     pub session_max_age: Option<Duration>,
 
+    /// Accept only native SSH tickets with one remaining use and at most this issuance lifetime.
+    #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub ticket_max_ttl: Option<Duration>,
+
     /// Deadline for a target to accept the connection and complete key exchange.
     /// Covers the TCP connect (or the direct-tcpip hop through a jump host) and the
     /// SSH handshake, but not authentication. Set to `0s` to wait forever.
@@ -530,6 +535,7 @@ impl Default for SshConfig {
             keepalive_interval: None,
             session_open_timeout: None,
             session_max_age: None,
+            ticket_max_ttl: None,
             target_handshake_timeout: _default_ssh_target_handshake_timeout(),
         }
     }

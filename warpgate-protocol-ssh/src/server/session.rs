@@ -41,8 +41,8 @@ use warpgate_core::recordings::{
 };
 use warpgate_core::{
     AdmittedTarget, ApprovedTarget, AuthorizedIdentity, ConfigProvider, Services,
-    TargetAuthorization, TargetSessionStart, WarpgateServerHandle, authorize_and_spend_ticket,
-    authorize_for_target, authorize_for_target_by_name,
+    TargetAuthorization, TargetSessionStart, WarpgateServerHandle, authorize_for_target,
+    authorize_for_target_by_name, validate_ticket,
 };
 use warpgate_db_entities::Parameters;
 use warpgate_db_entities::Parameters::SshHostKeyVerificationMode;
@@ -186,6 +186,7 @@ pub struct ServerSession {
     keyboard_interactive_state: Option<PendingKeyboardInteractiveAuth>,
     cached_successful_ticket_auth: Option<CachedSuccessfulTicketAuth>,
     allowed_auth_methods: MethodSet,
+    ticket_max_ttl: Option<Duration>,
     /// Track the state of a client snooping around pre-auth
     probe: ProbeState,
     /// Closes the client connection at teardown. Without it the connection
@@ -375,6 +376,7 @@ impl ServerSession {
             keyboard_interactive_state: None,
             cached_successful_ticket_auth: None,
             allowed_auth_methods: get_allowed_auth_methods(services).await?,
+            ticket_max_ttl: services.config.lock().await.store.ssh.ticket_max_ttl,
             probe: ProbeState::NoAttempt,
             client_closer: Some(client_closer),
         };
@@ -2606,6 +2608,10 @@ impl ServerSession {
             return Ok(AuthResult::Rejected);
         }
 
+        if self.ticket_max_ttl.is_some() && matches!(selector, AuthSelector::User { .. }) {
+            return Ok(AuthResult::Rejected);
+        }
+
         match selector {
             AuthSelector::User {
                 username,
@@ -2701,7 +2707,7 @@ impl ServerSession {
                 }
             }
             AuthSelector::Ticket { secret } => {
-                match authorize_and_spend_ticket(
+                let Some(ticket) = validate_ticket(
                     &self.services.db,
                     &self.services.login_protection,
                     secret,
@@ -2709,20 +2715,25 @@ impl ServerSession {
                     crate::PROTOCOL_NAME,
                 )
                 .await?
+                else {
+                    return Ok(AuthResult::Rejected);
+                };
+                if let Some(ttl) = self.ticket_max_ttl
+                    && !ticket.is_short_lived(ttl)
                 {
-                    Some(authorization) => {
-                        info!(
-                            "Authorized for {} with a ticket",
-                            authorization.target().name
-                        );
-                        let user_info = authorization.user_info().clone();
-                        self._auth_accept(user_info.clone(), Some(authorization))
-                            .await?;
-
-                        Ok(AuthResult::Accepted { user_info })
-                    }
-                    None => Ok(AuthResult::Rejected),
+                    return Ok(AuthResult::Rejected);
                 }
+                let Some(authorization) = ticket.spend(&self.services.db).await? else {
+                    return Ok(AuthResult::Rejected);
+                };
+                info!(
+                    "Authorized for {} with a ticket",
+                    authorization.target().name
+                );
+                let user_info = authorization.user_info().clone();
+                self._auth_accept(user_info.clone(), Some(authorization))
+                    .await?;
+                Ok(AuthResult::Accepted { user_info })
             }
         }
     }

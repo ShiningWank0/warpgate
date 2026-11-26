@@ -339,6 +339,8 @@ pub async fn authorize_and_spend_ticket(
 pub struct ValidatedTicket {
     authorization: TargetAuthorization,
     id: Uuid,
+    uses_left: Option<i16>,
+    lifetime: Option<time::Duration>,
 }
 
 impl ValidatedTicket {
@@ -352,6 +354,13 @@ impl ValidatedTicket {
 
     pub fn target(&self) -> &Target {
         self.authorization.target()
+    }
+
+    pub fn is_short_lived(&self, max_ttl: std::time::Duration) -> bool {
+        self.uses_left == Some(1)
+            && self
+                .lifetime
+                .is_some_and(|lifetime| lifetime.is_positive() && lifetime <= max_ttl)
     }
 
     /// For joining a session this ticket already opened, so no use is spent.
@@ -444,6 +453,8 @@ pub async fn validate_ticket(
         // role check — that's what makes it a ticket.
         Ok(Some(ValidatedTicket {
             id: ticket.id,
+            uses_left: ticket.uses_left,
+            lifetime: ticket.expiry.map(|expiry| expiry - ticket.created),
             authorization: TargetAuthorization {
                 user_info: (&user).into(),
                 target: SpecificTarget::any(target),
