@@ -8,6 +8,7 @@ parameters, and the timeout is a global parameter.
 
 import os
 import subprocess
+import time
 
 from .api_client import admin_client, sdk
 from .approval_util import (
@@ -260,8 +261,16 @@ class Test:
                 for a in api.get_session_approvals()
                 if a.target == target.name
             ], "a timed-out request must not stay in the queue"
-            events = {
-                (entry.values or {}).get("_type")
-                for entry in api.get_logs(sdk.GetLogsRequest(limit=500))
-            }
-        assert "SessionApprovalTimedOut1" in events
+            # The audit writer commits asynchronously after the request expires.
+            request = sdk.GetLogsRequest(username=user.username, target="audit", limit=500)
+            deadline = time.monotonic() + 10
+            while True:
+                events = {
+                    (entry.values or {}).get("_type")
+                    for entry in api.get_logs(request)
+                    if (entry.values or {}).get("target") == target.name
+                }
+                if "SessionApprovalTimedOut1" in events:
+                    break
+                assert time.monotonic() < deadline, f"timeout audit event missing: {events}"
+                time.sleep(0.25)
