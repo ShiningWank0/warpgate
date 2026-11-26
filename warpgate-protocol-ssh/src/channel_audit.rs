@@ -1,5 +1,6 @@
 use tracing::info;
 use uuid::Uuid;
+use warpgate_common::UserSessionId;
 use warpgate_core::recordings::{self, TerminalRecorder, TerminalRecordingStreamId};
 
 use crate::command_detector::CommandDetector;
@@ -7,6 +8,7 @@ use crate::common::PtyRequest;
 
 /// Encapsulates channel recording and command detection
 pub struct ChannelAudit {
+    session_id: UserSessionId,
     channel_id: Uuid,
     recording: Recording,
     detector: Option<CommandDetector>,
@@ -21,8 +23,9 @@ enum Recording {
 }
 
 impl ChannelAudit {
-    pub const fn new(channel_id: Uuid) -> Self {
+    pub const fn new(session_id: UserSessionId, channel_id: Uuid) -> Self {
         Self {
+            session_id,
             channel_id,
             recording: Recording::Off,
             detector: None,
@@ -72,7 +75,14 @@ impl ChannelAudit {
         if let Some(detector) = self.detector.as_mut()
             && let Some(command) = detector.on_output(data)
         {
-            info!(channel_id=%self.channel_id, %command, "Shell command");
+            info!(
+                target: "audit",
+                _type = "SshShellCommandObserved1",
+                session = %self.session_id,
+                channel_id = %self.channel_id,
+                %command,
+                "Observed SSH shell command"
+            );
         }
         Ok(())
     }

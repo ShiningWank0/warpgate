@@ -163,7 +163,7 @@ impl WebSshSession {
         info!(session=%self.id(), channel=%channel_id, "Opening session channel");
 
         let pty_request = make_pty_request(cols, rows);
-        let mut audit = ChannelAudit::new(channel_id);
+        let mut audit = ChannelAudit::new(self.id(), channel_id);
         let (cols, rows) = pty_request.screen_size();
         audit.start_command_detection(cols, rows);
         let started = async {

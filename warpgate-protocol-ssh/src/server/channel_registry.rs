@@ -14,6 +14,7 @@ use russh::ChannelOpenFailure;
 use russh::server::ChannelOpenHandle;
 use tokio::sync::OwnedSemaphorePermit;
 use uuid::Uuid;
+use warpgate_common::UserSessionId;
 use warpgate_core::recordings::ConnectionRecorder;
 
 use super::session::TrafficRecording;
@@ -98,6 +99,7 @@ pub struct Channel {
 
 impl Channel {
     const fn new(
+        session_id: UserSessionId,
         id: Uuid,
         server_id: Option<ServerChannelId>,
         awaits_exit: bool,
@@ -109,7 +111,7 @@ impl Channel {
                 deferred: vec![],
                 open,
             },
-            audit: ChannelAudit::new(id),
+            audit: ChannelAudit::new(session_id, id),
             pty_size: None,
             traffic_recorder: None,
             awaits_exit,
@@ -217,14 +219,17 @@ impl Channel {
     }
 }
 
-#[derive(Default)]
 pub struct ChannelRegistry {
+    session_id: UserSessionId,
     channels: HashMap<Uuid, Channel>,
 }
 
 impl ChannelRegistry {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(session_id: UserSessionId) -> Self {
+        Self {
+            session_id,
+            channels: HashMap::new(),
+        }
     }
 
     /// Register a client-initiated open (session, direct-tcpip, streamlocal):
@@ -240,8 +245,10 @@ impl ChannelRegistry {
     ) -> Uuid {
         let uuid = Uuid::new_v4();
         let open = PendingOpen::Client(Box::new(ClientOpen { handle, recording }));
-        self.channels
-            .insert(uuid, Channel::new(uuid, Some(server_id), session, open));
+        self.channels.insert(
+            uuid,
+            Channel::new(self.session_id, uuid, Some(server_id), session, open),
+        );
         uuid
     }
 
@@ -251,7 +258,7 @@ impl ChannelRegistry {
     pub fn begin_server_open(&mut self, id: Uuid) {
         self.channels
             .entry(id)
-            .or_insert_with(|| Channel::new(id, None, false, PendingOpen::Server));
+            .or_insert_with(|| Channel::new(self.session_id, id, None, false, PendingOpen::Server));
     }
 
     pub fn take_pending_recording(&mut self, id: Uuid) -> Option<TrafficRecording> {
@@ -376,7 +383,7 @@ mod tests {
     fn deferred_events_hold_their_slots_until_the_open_resolves() {
         let slots = Arc::new(Semaphore::new(2));
         let take = || slots.clone().try_acquire_owned().ok();
-        let mut channels = ChannelRegistry::new();
+        let mut channels = ChannelRegistry::new(UserSessionId(Uuid::new_v4()));
 
         // Confirming returns the slots with the events
         let id = Uuid::new_v4();

@@ -5,6 +5,9 @@ use russh::{ChannelId, Pty, Sig};
 use serde::{Deserialize, Serialize};
 use warpgate_core::sane_terminal_size;
 
+pub(crate) const SESSION_ID_ENV: &str = "WARPGATE_SESSION_ID";
+pub(crate) const CHANNEL_ID_ENV: &str = "WARPGATE_CHANNEL_ID";
+
 #[derive(Clone, Debug)]
 pub struct PtyRequest {
     pub term: String,
