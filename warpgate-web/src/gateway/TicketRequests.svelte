@@ -415,7 +415,8 @@
                         <div class="me-auto">
                             <strong>{request.targetName}</strong>
                             <small class="d-block text-muted">
-                                {request.status} ·
+                                {request.status}
+                                {' · '}
                                 {request.permanent ? 'Permanent' : 'Temporary'}
                                 {#if request.permanent &&
                                     request.status ===

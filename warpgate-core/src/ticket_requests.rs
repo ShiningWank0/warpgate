@@ -425,6 +425,8 @@ pub async fn activate_ticket_request(
             Expr::value(Some(ticket_id)),
         )
         .filter(TicketRequest::Column::Id.eq(request_id))
+        .filter(TicketRequest::Column::UserId.eq(user_id))
+        .filter(TicketRequest::Column::TargetId.eq(request.target_id))
         .filter(TicketRequest::Column::Status.eq(TicketRequestStatus::Approved))
         .filter(TicketRequest::Column::Permanent.eq(false))
         .filter(TicketRequest::Column::TicketId.is_null())
@@ -562,3 +564,6 @@ pub async fn list_ticket_requests(
 
     Ok(query.all(db_conn).await?)
 }
+
+#[cfg(all(test, feature = "sqlite"))]
+mod tests;
