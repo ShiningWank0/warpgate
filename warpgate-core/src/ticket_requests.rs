@@ -35,6 +35,7 @@ pub struct CreateTicketRequestParams {
     pub username: String,
     pub target_name: String,
     pub duration_seconds: Option<i64>,
+    pub permanent: bool,
     pub description: String,
 }
 
@@ -110,7 +111,7 @@ pub async fn create_ticket_request(
     let max_duration = target
         .ticket_max_duration_seconds
         .or(policy.ticket_max_duration_seconds);
-    let effective_duration = match params.duration_seconds {
+    let effective_duration = match params.duration_seconds.filter(|_| !params.permanent) {
         Some(duration) => {
             if duration <= 0 {
                 return Err(CreateTicketRequestError::InvalidInput(
@@ -152,8 +153,10 @@ pub async fn create_ticket_request(
         ));
     }
 
-    let auto_approve =
-        has_access && policy.ticket_auto_approve_existing_access && !target.ticket_require_approval;
+    let auto_approve = !params.permanent
+        && has_access
+        && policy.ticket_auto_approve_existing_access
+        && !target.ticket_require_approval;
 
     if auto_approve {
         let txn = begin_write(db_conn).await?;
@@ -174,6 +177,7 @@ pub async fn create_ticket_request(
             user_id: Set(params.user_id),
             target_id: Set(target.id),
             requested_duration_seconds: Set(effective_duration),
+            permanent: Set(false),
             description: Set(params.description),
             status: Set(TicketRequestStatus::Approved),
             resolved_by_user_id: Set(None),
@@ -208,7 +212,8 @@ pub async fn create_ticket_request(
             id: Set(request_id),
             user_id: Set(params.user_id),
             target_id: Set(target.id),
-            requested_duration_seconds: Set(effective_duration),
+            requested_duration_seconds: Set(effective_duration.filter(|_| !params.permanent)),
+            permanent: Set(params.permanent),
             description: Set(params.description),
             status: Set(TicketRequestStatus::Pending),
             resolved_by_user_id: Set(None),
@@ -228,6 +233,7 @@ pub async fn create_ticket_request(
             %request_id,
             user_id = %request_model.user_id,
             target_id = %request_model.target_id,
+            permanent = request_model.permanent,
             "Ticket request requires administrator approval"
         );
 
@@ -289,6 +295,7 @@ pub async fn approve_ticket_request(
     db: &sea_orm::DatabaseConnection,
     request_id: Uuid,
     admin_user_id: Option<UserId>,
+    permanent: Option<bool>,
 ) -> Result<Option<TicketRequest::Model>, WarpgateError> {
     let db_conn = db;
 
@@ -318,12 +325,14 @@ pub async fn approve_ticket_request(
         return Err(WarpgateError::from(anyhow!("Target no longer exists")));
     }
 
+    let permanent = permanent.unwrap_or(request.permanent);
     resolve_ticket_request(
         db,
         request,
         TicketRequestStatus::Approved,
         admin_user_id,
         None,
+        permanent,
     )
     .await
 }
@@ -356,6 +365,7 @@ pub async fn activate_ticket_request(
     let Some(request) = TicketRequest::Entity::find_by_id(request_id)
         .filter(TicketRequest::Column::UserId.eq(user_id))
         .filter(TicketRequest::Column::Status.eq(TicketRequestStatus::Approved))
+        .filter(TicketRequest::Column::Permanent.eq(false))
         .one(db_conn)
         .await?
     else {
@@ -416,6 +426,7 @@ pub async fn activate_ticket_request(
         )
         .filter(TicketRequest::Column::Id.eq(request_id))
         .filter(TicketRequest::Column::Status.eq(TicketRequestStatus::Approved))
+        .filter(TicketRequest::Column::Permanent.eq(false))
         .filter(TicketRequest::Column::TicketId.is_null())
         .exec(&txn)
         .await?;
@@ -465,12 +476,14 @@ pub async fn deny_ticket_request(
         }
     });
 
+    let permanent = request.permanent;
     resolve_ticket_request(
         db,
         request,
         TicketRequestStatus::Denied,
         admin_user_id,
         reason,
+        permanent,
     )
     .await
 }
@@ -481,10 +494,24 @@ async fn resolve_ticket_request(
     status: TicketRequestStatus,
     admin_user_id: Option<UserId>,
     reason: Option<String>,
+    permanent: bool,
 ) -> Result<Option<TicketRequest::Model>, WarpgateError> {
+    let duration = if permanent {
+        None
+    } else if request.permanent {
+        // Activation also applies the current target and global duration caps.
+        Some(300)
+    } else {
+        request.requested_duration_seconds
+    };
     let now = OffsetDateTime::now_utc();
     let update = TicketRequest::Entity::update_many()
         .col_expr(TicketRequest::Column::Status, Expr::value(status.clone()))
+        .col_expr(TicketRequest::Column::Permanent, Expr::value(permanent))
+        .col_expr(
+            TicketRequest::Column::RequestedDurationSeconds,
+            Expr::value(duration),
+        )
         .col_expr(
             TicketRequest::Column::ResolvedByUserId,
             Expr::value(admin_user_id),
@@ -503,6 +530,8 @@ async fn resolve_ticket_request(
     }
 
     request.status = status;
+    request.permanent = permanent;
+    request.requested_duration_seconds = duration;
     request.resolved_by_user_id = admin_user_id;
     request.resolved_at = Some(now);
     request.deny_reason = reason;
@@ -514,6 +543,7 @@ async fn resolve_ticket_request(
         target_id = %request.target_id,
         actor_user_id = admin_user_id.map(|id| id.to_string()),
         approved = request.status == TicketRequestStatus::Approved,
+        permanent,
         "Administrator decided a ticket request"
     );
     Ok(Some(request))

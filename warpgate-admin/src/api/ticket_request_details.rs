@@ -21,6 +21,7 @@ pub struct TicketRequestDetails {
     /// Empty if the target has been deleted
     pub target_name: Option<String>,
     pub requested_duration_seconds: Option<i64>,
+    pub permanent: bool,
     pub description: String,
     pub status: TicketRequestStatus,
     pub resolved_by_user_id: Option<UserId>,
@@ -70,6 +71,7 @@ pub async fn batch_resolve_ticket_request_names(
             user_id: r.user_id,
             target_id: r.target_id,
             requested_duration_seconds: r.requested_duration_seconds,
+            permanent: r.permanent,
             description: r.description,
             status: r.status,
             resolved_by_username: r

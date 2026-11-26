@@ -1052,6 +1052,16 @@
             "required": true,
             "deprecated": false,
             "explode": true
+          },
+          {
+            "name": "permanent",
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "required": false,
+            "deprecated": false,
+            "explode": true
           }
         ],
         "responses": {
@@ -9759,6 +9769,7 @@
           "id",
           "user_id",
           "target_id",
+          "permanent",
           "description",
           "status",
           "created"
@@ -9787,6 +9798,9 @@
           "requested_duration_seconds": {
             "type": "integer",
             "format": "int64"
+          },
+          "permanent": {
+            "type": "boolean"
           },
           "description": {
             "type": "string"

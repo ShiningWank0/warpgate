@@ -30,6 +30,7 @@ pub struct Api;
 struct CreateTicketRequestBody {
     target_name: String,
     duration_seconds: Option<i64>,
+    permanent: Option<bool>,
     description: Option<String>,
 }
 
@@ -79,6 +80,7 @@ struct TicketRequestModel {
     pub target_id: TargetId,
     pub target_name: String,
     pub requested_duration_seconds: Option<i64>,
+    pub permanent: bool,
     pub description: String,
     pub status: warpgate_db_entities::TicketRequest::TicketRequestStatus,
     pub resolved_by_user_id: Option<UserId>,
@@ -198,6 +200,7 @@ impl Api {
                 username: user_model.username.clone(),
                 target_name,
                 duration_seconds: body.duration_seconds,
+                permanent: body.permanent.unwrap_or_default(),
                 description: body.description.clone().unwrap_or_default(),
             },
         )
@@ -248,6 +251,7 @@ impl Api {
                 target_id: req.target_id,
                 target_name,
                 requested_duration_seconds: req.requested_duration_seconds,
+                permanent: req.permanent,
                 description: req.description,
                 status: req.status,
                 resolved_by_user_id: req.resolved_by_user_id,

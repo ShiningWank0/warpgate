@@ -602,3 +602,48 @@ class TestTicketRequests:
             assert resp.status_code == 201
         finally:
             _disable_self_service(url)
+
+
+    @pytest.mark.parametrize("approve_permanent", [True, False])
+    def test_permanent_request_approval_does_not_issue_a_ticket(
+        self,
+        echo_server_port,
+        shared_wg: WarpgateProcess,
+        approve_permanent,
+    ):
+        url = f"https://localhost:{shared_wg.http_port}"
+        with admin_client(url) as api:
+            user, target, _ = self._setup_user_and_target(api, echo_server_port)
+            api.update_parameters(
+                _default_params(ticket_self_service_enabled=True, ticket_max_uses=1)
+            )
+
+        try:
+            session = self._login(url, user.username)
+            request_url = f"{url}/@warpgate/api/ticket-requests"
+            response = session.post(
+                request_url,
+                json={"target_name": target.name, "permanent": True},
+            )
+            assert response.status_code == 201
+            request = response.json()["request"]
+            assert request["permanent"]
+            assert request["status"] == "Pending"
+            assert request["ticket_id"] is None
+            activate_url = f"{request_url}/{request['id']}/activate"
+            assert session.post(activate_url).status_code == 404
+
+            with admin_client(url) as api:
+                approved = api.approve_ticket_request(
+                    request["id"], permanent=approve_permanent
+                )
+            assert approved.permanent is approve_permanent
+            assert approved.ticket_id is None
+            result = session.post(activate_url)
+            if approve_permanent:
+                assert result.status_code == 404
+            else:
+                assert result.status_code == 200
+                assert result.json()["request"]["requested_duration_seconds"] == 300
+        finally:
+            _disable_self_service(url)

@@ -53,6 +53,12 @@ ticket-request permission and is audited. A pending or denied request
 cannot be activated. Configure ticket request visibility to include targets
 outside users' existing roles when such escalation requests are needed.
 
-For a permanent change, review a code change to the user's role assignments
-and apply the approved change through the configuration repository. The
-ticket workflow grants time-limited access to a target.
+Requesters choose temporary or permanent access. Reviewers can change the
+type before approving. Temporary approval enables self-service activation
+of a ticket. If a permanent request is approved as temporary, its ticket
+is capped at five minutes as well as the configured maxima.
+
+Permanent approval records the decision without granting live access.
+Reference the request UUID in the user-role change and apply it from the
+protected configuration repository after review. The existing role
+assignment is the source of truth for ongoing access.

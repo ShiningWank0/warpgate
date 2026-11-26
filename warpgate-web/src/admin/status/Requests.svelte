@@ -56,6 +56,8 @@
     let error = $derived(actionError ?? loadError)
     // Gates the first render only; the watch drives every refresh after it.
     let loaded = $state(false)
+    let approvalRequest: TicketRequest | undefined = $state()
+    let approvePermanent = $state(false)
     let denyModalRequest: TicketRequest | undefined = $state()
     let denyReason = $state('')
     let denyError: string | undefined = $state()
@@ -159,8 +161,16 @@
         )
     }
 
-    async function approveTicket(request: TicketRequest) {
-        await runAction(() => api.approveTicketRequest({ id: request.id }))
+    async function approveTicket() {
+        if (!approvalRequest) return
+        const id = approvalRequest.id
+        try {
+            await runAction(() =>
+                api.approveTicketRequest({ id, permanent: approvePermanent }),
+            )
+        } finally {
+            approvalRequest = undefined
+        }
     }
 
     // Reports into the modal it is run from, not the page behind it.
@@ -307,7 +317,7 @@
                                         entry.ticket.userId}
                                 </strong>
                                 <span class="text-muted">
-                                    needs a ticket for
+                                    requests access to
                                 </span>
                                 <strong>
                                     {entry.ticket.targetName ??
@@ -315,6 +325,10 @@
                                 </strong>
                             </div>
                             <div class="small text-muted">
+                                {entry.ticket.permanent
+                                    ? 'Permanent'
+                                    : 'Temporary'}
+                                ·
                                 {#if entry.ticket.requestedDurationSeconds}
                                     valid for
                                     {formatDurationAsHumantime(
@@ -330,12 +344,15 @@
                         </div>
 
                         <ButtonGroup class="ms-auto">
-                            <AsyncButton
+                            <Button
                                 color="success"
-                                click={() => approveTicket(entry.ticket)}
+                                onclick={() => {
+                                    approvalRequest = entry.ticket
+                                    approvePermanent = entry.ticket.permanent
+                                }}
                             >
-                                Approve
-                            </AsyncButton>
+                                Review
+                            </Button>
                             <Button
                                 color="danger"
                                 onclick={() => {
@@ -353,6 +370,50 @@
         </div>
     {/if}
 {/if}
+
+<Modal isOpen={!!approvalRequest} toggle={() => (approvalRequest = undefined)}>
+    <ModalBody>
+        {#if approvalRequest}
+            <p>
+                Review access for
+                <strong
+                    >{approvalRequest.username ??
+                        approvalRequest.userId}</strong
+                >
+                to
+                <strong
+                    >{approvalRequest.targetName ??
+                        approvalRequest.targetId}</strong
+                >.
+            </p>
+            <FormGroup floating label="Grant type">
+                <select class="form-select" bind:value={approvePermanent}>
+                    <option value={false}>Temporary ticket</option>
+                    <option value={true}>Permanent role change</option>
+                </select>
+            </FormGroup>
+            {#if approvePermanent}
+                <p class="mb-0">
+                    Apply the approved role change in the access configuration.
+                    Reference request <code>{approvalRequest.id}</code> in the
+                    change.
+                </p>
+            {/if}
+        {/if}
+    </ModalBody>
+    <ModalFooter>
+        <AsyncButton class="modal-button" color="success" click={approveTicket}>
+            Approve
+        </AsyncButton>
+        <Button
+            class="modal-button"
+            color="secondary"
+            onclick={() => (approvalRequest = undefined)}
+        >
+            Cancel
+        </Button>
+    </ModalFooter>
+</Modal>
 
 <Modal
     isOpen={!!denyModalRequest}

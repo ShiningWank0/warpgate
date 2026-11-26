@@ -1,9 +1,9 @@
-use warpgate_common::{TargetId, UserId};
 use poem_openapi::{Enum, Object};
 use sea_orm::entity::prelude::*;
 use serde::Serialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
+use warpgate_common::{TargetId, UserId};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Clone, Enum, EnumIter, DeriveActiveEnum)]
 #[sea_orm(rs_type = "String", db_type = "String(StringLen::N(16))")]
@@ -26,6 +26,7 @@ pub struct Model {
     pub user_id: UserId,
     pub target_id: TargetId,
     pub requested_duration_seconds: Option<i64>,
+    pub permanent: bool,
     #[sea_orm(column_type = "Text")]
     pub description: String,
     pub status: TicketRequestStatus,

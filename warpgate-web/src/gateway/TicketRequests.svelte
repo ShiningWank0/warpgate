@@ -84,6 +84,7 @@
         paramDuration || formatDurationAsHumantime(DEFAULT_DURATION_SECONDS),
     )
     let durationTouched = $state(!!paramDuration)
+    let permanent = $state(false)
 
     let selectedTicketRequestTarget = $derived(
         ticketRequestTargets?.find(target => target.name === selectedTarget),
@@ -137,7 +138,9 @@
     )
 
     let formInvalid = $derived(
-        !!durationError || descriptionMissing || !!unavailableTarget,
+        (!permanent && !!durationError) ||
+            descriptionMissing ||
+            !!unavailableTarget,
     )
 
     async function load() {
@@ -169,7 +172,10 @@
             const result = await api.createTicketRequest({
                 createTicketRequestBody: {
                     targetName: selectedTarget,
-                    durationSeconds: durationSeconds || undefined,
+                    durationSeconds: permanent
+                        ? undefined
+                        : durationSeconds || undefined,
+                    permanent,
                     description: description || undefined,
                 },
             })
@@ -183,6 +189,7 @@
             showForm = false
             description = ''
             descriptionTouched = false
+            permanent = false
             await load()
         } catch (err) {
             error = await stringifyError(err)
@@ -236,7 +243,7 @@
         class="btn btn-primary ms-auto"
         onclick={openRequestForm}
     >
-        Request a ticket
+        Request access
     </button>
 </div>
 
@@ -274,7 +281,7 @@
 <Loadable promise={initPromise}>
     <Modal isOpen={showForm} toggle={() => (showForm = false)}>
         <ModalBody>
-            <h4 class="mb-3">Request a ticket</h4>
+            <h4 class="mb-3">Request access</h4>
 
             {#if ticketRequestTargets?.length}
                 {#if unavailableTarget}
@@ -323,28 +330,46 @@
                         {/if}
                     </FormGroup>
 
-                    <FormGroup floating label="Duration">
-                        <input
-                            type="text"
-                            bind:value={durationText}
-                            class="form-control"
-                            class:is-invalid={!!durationError}
-                            placeholder="e.g. 8h, 30m, 1d"
-                            oninput={() => (durationTouched = true)}
-                        >
-                        {#if durationError}
-                            <div class="invalid-feedback">{durationError}</div>
-                        {:else if maxDurationSeconds}
-                            <small class="form-text text-muted">
-                                Maximum:
-                                {formatDurationAsHumantime(maxDurationSeconds)}
-                            </small>
-                        {:else}
-                            <small class="form-text text-muted">
-                                Examples: 30m, 8h, 1d, 2h30m
-                            </small>
-                        {/if}
+                    <FormGroup floating label="Access duration">
+                        <select class="form-select" bind:value={permanent}>
+                            <option value={false}>Temporary ticket</option>
+                            <option value={true}>Permanent role change</option>
+                        </select>
                     </FormGroup>
+
+                    {#if permanent}
+                        <small class="text-muted">
+                            An approved permanent request is applied through the
+                            gateway's access configuration.
+                        </small>
+                    {:else}
+                        <FormGroup floating label="Duration">
+                            <input
+                                type="text"
+                                bind:value={durationText}
+                                class="form-control"
+                                class:is-invalid={!!durationError}
+                                placeholder="e.g. 8h, 30m, 1d"
+                                oninput={() => (durationTouched = true)}
+                            >
+                            {#if durationError}
+                                <div class="invalid-feedback">
+                                    {durationError}
+                                </div>
+                            {:else if maxDurationSeconds}
+                                <small class="form-text text-muted">
+                                    Maximum:
+                                    {formatDurationAsHumantime(
+                                        maxDurationSeconds,
+                                    )}
+                                </small>
+                            {:else}
+                                <small class="form-text text-muted">
+                                    Examples: 30m, 8h, 1d, 2h30m
+                                </small>
+                            {/if}
+                        </FormGroup>
+                    {/if}
                 </form>
             {:else if ticketRequestTargets}
                 <EmptyState
@@ -362,7 +387,7 @@
                 click={createRequest}
                 disabled={formInvalid || !ticketRequestTargets?.length}
             >
-                Request ticket
+                Submit request
             </AsyncButton>
 
             <Button
@@ -390,7 +415,13 @@
                         <div class="me-auto">
                             <strong>{request.targetName}</strong>
                             <small class="d-block text-muted">
-                                {request.status}
+                                {request.status} ·
+                                {request.permanent ? 'Permanent' : 'Temporary'}
+                                {#if request.permanent &&
+                                    request.status ===
+                                        TicketRequestStatus.Approved}
+                                    · Approved for a configuration change
+                                {/if}
                                 {#if request.denyReason}
                                     &mdash; {request.denyReason}
                                 {/if}
@@ -402,6 +433,7 @@
                             {/if}
                         </div>
                         {#if request.status === TicketRequestStatus.Approved &&
+                            !request.permanent &&
                             !request.ticketId}
                             <AsyncButton
                                 color="success"
