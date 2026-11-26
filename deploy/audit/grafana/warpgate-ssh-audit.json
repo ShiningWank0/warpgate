@@ -1,0 +1,159 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_LOKI",
+      "label": "Loki",
+      "type": "datasource",
+      "pluginId": "loki",
+      "pluginName": "Loki"
+    }
+  ],
+  "uid": "warpgate-ssh-audit",
+  "title": "Warpgate SSH audit",
+  "tags": [
+    "warpgate",
+    "ssh",
+    "audit"
+  ],
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "SSH sessions and access approvals",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (event_type) (count_over_time({job=\"warpgate-audit\"} | json event_type=\"audit._type\" | __error__=\"\" | event_type=~\"SshSessionLinked1|SshSessionDeadline1|TicketApprovalRequested1|TicketApprovalDecided1\" [$__interval]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "range",
+          "legendFormat": "{{event_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "SFTP transfer volume",
+      "type": "timeseries",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (operation) (sum_over_time({job=\"warpgate-audit\"} | json event_type=\"audit._type\", operation=\"audit.operation\", transferred=\"audit.bytes_transferred\" | event_type=\"SshSftpOperation1\" | transferred!=\"\" | unwrap transferred | __error__=\"\" [$__interval]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "range",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "SFTP coverage and interrupted requests",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"warpgate-audit\"} | json event_type=\"audit._type\" | __error__=\"\" | event_type=~\"SshSftpAuditGap1|SshSftpUnanswered1\"",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showTime": true,
+        "sortOrder": "Descending"
+      }
+    },
+    {
+      "id": 4,
+      "title": "SSH and approval activity",
+      "type": "logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "${DS_LOKI}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"warpgate-audit\"} | json event_type=\"audit._type\" | __error__=\"\" | event_type=~\"Ssh.*|TicketApproval.*\"",
+          "datasource": {
+            "type": "loki",
+            "uid": "${DS_LOKI}"
+          },
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showTime": true,
+        "sortOrder": "Descending"
+      }
+    }
+  ]
+}

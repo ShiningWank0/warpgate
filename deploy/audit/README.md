@@ -73,3 +73,19 @@ upload. Keep archive administration separate from the gateway and target
 hosts, and monitor the collector for upload failures and backpressure.
 See [AWS Object Lock](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lock.html)
 and [Cloudflare R2 Bucket Locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/).
+
+## Monitor activity
+
+The gateway includes **Status → SSH audit** in its administration UI. The
+page refreshes every 15 seconds when visible and summarizes the newest
+300 audit entries, with links to sessions and filters for commands,
+transfers and approvals.
+
+When `loki_endpoint` is configured, import
+[Warpgate SSH audit](grafana/warpgate-ssh-audit.json) in Grafana and select
+the Loki data source receiving the Vector stream. The dashboard shows
+SSH activity, SFTP transfer volume, audit gaps and the underlying events.
+Keep Loki behind an authenticated private endpoint or gateway. Its buffer
+can drop new events when full so a Loki outage does not stall archival.
+Use the retained object archive for investigations that require complete
+historical evidence.

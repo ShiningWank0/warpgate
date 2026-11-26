@@ -513,7 +513,13 @@ impl ServerSession {
                         }
                     } => {
                         let phase = if target_authenticated { "active" } else { "opening" };
-                        info!(session = %this.id, phase, "Closing SSH session at its deadline");
+                        info!(
+                            target: "audit",
+                            _type = "SshSessionDeadline1",
+                            session = %this.id,
+                            phase,
+                            "Closing SSH session at its deadline"
+                        );
                         this.disconnect_token.cancel();
                         this.request_disconnect();
                         if let Some(closer) = this.client_closer.take() {
