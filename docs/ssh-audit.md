@@ -36,3 +36,20 @@ values read from an already-running user shell as user-controlled.
 This channel metadata applies to shell, exec and subsystem requests. SSH port
 forwarding channels have no session environment. Warpgate's SSH traffic
 recordings associate those channels with their target session independently.
+
+## File transfers
+
+OpenSSH `sftp` and current OpenSSH `scp` use the SFTP subsystem. For SFTP
+version 3, Warpgate emits `SshSftpOperation1` events with the operation,
+paths when available, open flags, byte offset, requested and returned byte
+counts, and the server status code. Payload bytes are excluded from these
+audit events. Each event has the same session and channel IDs used for
+command auditing.
+
+Watch for `SshSftpAuditGap1` when a stream exceeds the parser bounds or uses
+an unsupported version. The proxy continues passing traffic in that case.
+`SshSftpUnanswered1` indicates that the channel ended before all requests
+received a response. The older `scp -O` mode and tools such as rsync use exec
+channels. Use target OS file auditing for those tools, for server-side
+extensions, and to cover transfers carried inside arbitrary shell commands
+or SSH forwarding.

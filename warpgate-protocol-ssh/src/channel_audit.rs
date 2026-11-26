@@ -1,10 +1,11 @@
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 use warpgate_common::UserSessionId;
 use warpgate_core::recordings::{self, TerminalRecorder, TerminalRecordingStreamId};
 
 use crate::command_detector::CommandDetector;
 use crate::common::PtyRequest;
+use crate::sftp_audit::SftpAudit;
 
 /// Encapsulates channel recording and command detection
 pub struct ChannelAudit {
@@ -12,6 +13,8 @@ pub struct ChannelAudit {
     channel_id: Uuid,
     recording: Recording,
     detector: Option<CommandDetector>,
+    sftp: Option<Box<SftpAudit>>,
+    sftp_requested: bool,
 }
 
 enum Recording {
@@ -29,6 +32,8 @@ impl ChannelAudit {
             channel_id,
             recording: Recording::Off,
             detector: None,
+            sftp: None,
+            sftp_requested: false,
         }
     }
 
@@ -62,7 +67,31 @@ impl ChannelAudit {
         self.detector = Some(CommandDetector::new(cols, rows));
     }
 
+    pub fn start_sftp_audit(&mut self) {
+        if !self.sftp_requested {
+            self.sftp_requested = true;
+            self.sftp = Some(Box::default());
+        }
+    }
+
+    fn observe_sftp(&mut self, data: &[u8], from_client: bool) {
+        if let Some(sftp) = &mut self.sftp
+            && let Err(error) = sftp.observe(self.session_id, self.channel_id, data, from_client)
+        {
+            warn!(
+                target: "audit",
+                _type = "SshSftpAuditGap1",
+                session = %self.session_id,
+                channel_id = %self.channel_id,
+                reason = %error,
+                "Could not continue parsing SFTP metadata"
+            );
+            self.sftp = None;
+        }
+    }
+
     pub async fn on_input(&mut self, data: &[u8]) -> recordings::Result<()> {
+        self.observe_sftp(data, true);
         self.record(TerminalRecordingStreamId::Input, data).await?;
         if let Some(detector) = self.detector.as_mut() {
             detector.on_input(data);
@@ -71,6 +100,7 @@ impl ChannelAudit {
     }
 
     pub async fn on_output(&mut self, data: &[u8]) -> recordings::Result<()> {
+        self.observe_sftp(data, false);
         self.record(TerminalRecordingStreamId::Output, data).await?;
         if let Some(detector) = self.detector.as_mut()
             && let Some(command) = detector.on_output(data)
@@ -116,6 +146,14 @@ impl ChannelAudit {
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+}
+
+impl Drop for ChannelAudit {
+    fn drop(&mut self) {
+        if let Some(sftp) = &self.sftp {
+            sftp.report_unanswered(self.session_id, self.channel_id);
         }
     }
 }

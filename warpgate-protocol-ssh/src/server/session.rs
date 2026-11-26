@@ -2130,6 +2130,11 @@ impl ServerSession {
     ) -> Result<(), SshClientError> {
         let channel_id = self.map_channel(server_channel_id)?;
         info!(channel=%channel_id, "Requesting subsystem {}", &name);
+        if name == "sftp"
+            && let Some(channel) = self.channels.get_mut(&channel_id)
+        {
+            channel.audit.start_sftp_audit();
+        }
         let _ = self.maybe_connect_remote().await;
         self.send_command(RCCommand::Channel(
             channel_id,
