@@ -22,6 +22,7 @@ pub mod resources;
 mod secret_backend_registry;
 mod services;
 mod state;
+pub mod ticket_notifications;
 pub mod ticket_requests;
 pub mod user_sessions;
 pub use auth_state_store::*;

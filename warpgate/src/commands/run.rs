@@ -238,6 +238,8 @@ pub async fn command(params: &GlobalParams, enable_admin_token: bool) -> Result<
     supervisors.push(tls_listener!("VNC", VncProtocolServer, vnc));
     supervisors.push(tls_listener!("RDP", RdpProtocolServer, rdp));
 
+    warpgate_core::ticket_notifications::spawn(&services.db)?;
+
     tokio::spawn({
         let services = services.clone();
         async move {
