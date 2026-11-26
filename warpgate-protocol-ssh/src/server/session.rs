@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::future::pending;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
@@ -14,6 +16,7 @@ use russh::{ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Sig};
 use termcolor::Color;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::{Mutex, broadcast, oneshot};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::*;
 use url::Url;
@@ -326,6 +329,7 @@ impl ServerSession {
         mut session_handle_rx: UnboundedReceiver<SessionHandleCommand>,
         mut handler_event_rx: UnboundedReceiver<ServerHandlerEvent>,
         client_closer: ClientCloser,
+        accepted_at: Instant,
     ) -> Result<impl Future<Output = Result<()>> + use<>> {
         let id = server_handle.lock().await.user_session_id();
 
@@ -440,37 +444,97 @@ impl ServerSession {
             }
         })?;
 
-        let inactivity_timeout = services.config.lock().await.store.ssh.inactivity_timeout;
+        let (inactivity_timeout, open_timeout, max_age) = {
+            let config = services.config.lock().await;
+            let ssh = &config.store.ssh;
+            (
+                ssh.inactivity_timeout,
+                ssh.session_open_timeout,
+                ssh.session_max_age,
+            )
+        };
+        let mut deadline = open_timeout
+            .map(|duration| {
+                accepted_at
+                    .checked_add(duration)
+                    .context("SSH session_open_timeout is too large")
+            })
+            .transpose()?;
 
         Ok(async move {
-            let result = loop {
-                let inactivity_timeout = if matches!(this.target, TargetSelection::AwaitingApproval)
-                {
-                    // Session waiting for approval will produce no events either way
-                    // and we don't want to kill it
-                    None
-                } else {
-                    Some(inactivity_timeout)
-                };
-                let next_event_fut = this.intake.next();
-                let next_event = match inactivity_timeout {
-                    Some(timeout) => tokio::time::timeout(timeout, next_event_fut).await,
-                    None => Ok(next_event_fut.await),
-                };
-                match next_event {
-                    Ok(Some(event)) => {
-                        if let Err(error) = this.handle_event(event).await {
-                            break Err(error);
+            let mut target_authenticated = false;
+            let mut connected_event = None;
+            let result: Result<()> = loop {
+                let step = async {
+                    if let Some(event) = connected_event.take() {
+                        this.handle_event(event).await?;
+                        return Ok(ControlFlow::Continue(None));
+                    }
+                    let next_event = this.intake.next();
+                    let next_event = if matches!(this.target, TargetSelection::AwaitingApproval) {
+                        Ok(next_event.await)
+                    } else {
+                        tokio::time::timeout(inactivity_timeout, next_event).await
+                    };
+                    match next_event {
+                        Ok(Some(event)) => {
+                            if !target_authenticated
+                                && matches!(
+                                    event,
+                                    Event::Client(RCEvent::State(RCState::Connected))
+                                )
+                            {
+                                return Ok(ControlFlow::Continue(Some(event)));
+                            }
+                            this.handle_event(event).await?;
+                            Ok(ControlFlow::Continue(None))
+                        }
+                        Ok(None) => Ok(ControlFlow::Break(())),
+                        Err(_) => {
+                            info!("Closing the session due to inactivity");
+                            let _ =
+                                this.emit_service_message("Closing the session due to inactivity");
+                            this.request_disconnect();
+                            this.disconnect_server().await;
+                            Ok(ControlFlow::Break(()))
                         }
                     }
-                    Ok(None) => break Ok(()),
-                    Err(_) => {
-                        info!("Closing the session due to inactivity");
-                        let _ = this.emit_service_message("Closing the session due to inactivity");
+                };
+                // The hard deadline also covers event handling that is waiting on I/O.
+                let next = tokio::select! {
+                    biased;
+                    () = async {
+                        match deadline {
+                            Some(deadline) => tokio::time::sleep_until(deadline).await,
+                            None => pending().await,
+                        }
+                    } => {
+                        let phase = if target_authenticated { "active" } else { "opening" };
+                        info!(session = %this.id, phase, "Closing SSH session at its deadline");
+                        this.disconnect_token.cancel();
                         this.request_disconnect();
-                        this.disconnect_server().await;
+                        if let Some(closer) = this.client_closer.take() {
+                            closer.close();
+                        }
                         break Ok(());
                     }
+                    next = step => next,
+                };
+                match next {
+                    Ok(ControlFlow::Continue(Some(event))) => {
+                        target_authenticated = true;
+                        deadline = max_age
+                            .map(|duration| {
+                                Instant::now()
+                                    .checked_add(duration)
+                                    .context("SSH session_max_age is too large")
+                            })
+                            .transpose()?;
+                        connected_event = Some(event);
+                    }
+                    Ok(ControlFlow::Continue(None)) => {}
+                    Ok(ControlFlow::Break(())) => break Ok(()),
+                    Err(error) => break Err(error),
                 }
             };
             debug!("No more events");

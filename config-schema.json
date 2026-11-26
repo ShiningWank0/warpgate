@@ -111,6 +111,8 @@
         "keepalive_interval": null,
         "listen": "[::]:2222",
         "proxy_protocol": false,
+        "session_max_age": null,
+        "session_open_timeout": null,
         "target_handshake_timeout": "30s"
       }
     },
@@ -517,6 +519,22 @@
           "description": "Accept HAProxy PROXY protocol v1/v2 headers from the listener's peer.",
           "type": "boolean",
           "default": false
+        },
+        "session_max_age": {
+          "description": "Maximum lifetime after target authentication, including while the connection is active.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "session_open_timeout": {
+          "description": "Maximum time from accepting an SSH client until target authentication completes.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
         },
         "target_handshake_timeout": {
           "description": "Deadline for a target to accept the connection and complete key exchange.\nCovers the TCP connect (or the direct-tcpip hop through a jump host) and the\nSSH handshake, but not authentication. Set to `0s` to wait forever.",

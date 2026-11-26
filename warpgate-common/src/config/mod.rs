@@ -495,6 +495,16 @@ pub struct SshConfig {
     #[schemars(with = "Option<String>")]
     pub keepalive_interval: Option<Duration>,
 
+    /// Maximum time from accepting an SSH client until target authentication completes.
+    #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub session_open_timeout: Option<Duration>,
+
+    /// Maximum lifetime after target authentication, including while the connection is active.
+    #[serde(default, with = "humantime_serde")]
+    #[schemars(with = "Option<String>")]
+    pub session_max_age: Option<Duration>,
+
     /// Deadline for a target to accept the connection and complete key exchange.
     /// Covers the TCP connect (or the direct-tcpip hop through a jump host) and the
     /// SSH handshake, but not authentication. Set to `0s` to wait forever.
@@ -518,6 +528,8 @@ impl Default for SshConfig {
             external_host: None,
             inactivity_timeout: _default_ssh_inactivity_timeout(),
             keepalive_interval: None,
+            session_open_timeout: None,
+            session_max_age: None,
             target_handshake_timeout: _default_ssh_target_handshake_timeout(),
         }
     }
