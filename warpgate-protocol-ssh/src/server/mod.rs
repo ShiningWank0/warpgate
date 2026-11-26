@@ -5,6 +5,7 @@ mod event_intake;
 mod russh_handler;
 mod service_output;
 mod session;
+mod session_deadline;
 mod session_handle;
 mod target_menu;
 use std::borrow::Cow;

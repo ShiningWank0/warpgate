@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify-ticket-policy:
-    name: Kani ticket policy proofs
+  verify-security-invariants:
+    name: Kani security proofs and counterexamples
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

@@ -53,6 +53,7 @@ use super::client_closer::ClientCloser;
 use super::event_intake::EventIntake;
 use super::russh_handler::ServerHandlerEvent;
 use super::service_output::ServiceOutput;
+use super::session_deadline::SessionDeadline;
 use super::session_handle::SessionHandleCommand;
 use crate::common::{CHANNEL_ID_ENV, SESSION_ID_ENV};
 use crate::server::SessionSettings;
@@ -454,7 +455,7 @@ impl ServerSession {
         let inactivity_timeout = settings.ssh.inactivity_timeout;
         let open_timeout = settings.ssh.session_open_timeout;
         let max_age = settings.ssh.session_max_age;
-        let mut deadline = open_timeout
+        let opening_deadline = open_timeout
             .map(|duration| {
                 settings
                     .accepted_at
@@ -464,7 +465,7 @@ impl ServerSession {
             .transpose()?;
 
         Ok(async move {
-            let mut target_authenticated = false;
+            let mut deadline = SessionDeadline::Opening(opening_deadline);
             let mut connected_event = None;
             let result: Result<()> = loop {
                 let step = async {
@@ -480,12 +481,7 @@ impl ServerSession {
                     };
                     match next_event {
                         Ok(Some(event)) => {
-                            if !target_authenticated
-                                && matches!(
-                                    event,
-                                    Event::Client(RCEvent::State(RCState::Connected))
-                                )
-                            {
+                            if matches!(event, Event::Client(RCEvent::State(RCState::Connected))) {
                                 return Ok(ControlFlow::Continue(Some(event)));
                             }
                             this.handle_event(event).await?;
@@ -506,39 +502,43 @@ impl ServerSession {
                 let next = tokio::select! {
                     biased;
                     () = async {
-                        match deadline {
+                        match deadline.at() {
                             Some(deadline) => tokio::time::sleep_until(deadline).await,
                             None => pending().await,
                         }
                     } => {
-                        let phase = if target_authenticated { "active" } else { "opening" };
-                        info!(
-                            target: "audit",
-                            _type = "SshSessionDeadline1",
-                            session = %this.id,
-                            phase,
-                            "Closing SSH session at its deadline"
-                        );
-                        this.disconnect_token.cancel();
-                        this.request_disconnect();
-                        if let Some(closer) = this.client_closer.take() {
-                            closer.close();
-                        }
+                        this.close_at_deadline(deadline.phase());
                         break Ok(());
                     }
                     next = step => next,
                 };
                 match next {
                     Ok(ControlFlow::Continue(Some(event))) => {
-                        target_authenticated = true;
-                        deadline = max_age
-                            .map(|duration| {
-                                Instant::now()
-                                    .checked_add(duration)
-                                    .context("SSH session_max_age is too large")
-                            })
-                            .transpose()?;
-                        connected_event = Some(event);
+                        // A clock check in select may have run just before
+                        // the event became ready. Recheck before replacing
+                        // the opening cutoff with the active one.
+                        match deadline.on_connected(Instant::now(), |start| {
+                            max_age
+                                .map(|duration| {
+                                    start
+                                        .checked_add(duration)
+                                        .context("SSH session_max_age is too large")
+                                })
+                                .transpose()
+                        }) {
+                            Ok(Some(next)) => {
+                                deadline = next;
+                                connected_event = Some(event);
+                            }
+                            Ok(None) => {
+                                this.close_at_deadline(deadline.phase());
+                                break Ok(());
+                            }
+                            Err(error) => {
+                                this.abort_transport();
+                                break Err(error);
+                            }
+                        }
                     }
                     Ok(ControlFlow::Continue(None)) => {}
                     Ok(ControlFlow::Break(())) => break Ok(()),
@@ -2870,6 +2870,25 @@ impl ServerSession {
         let _ = self.rc_abort_tx.send(());
         if self.rc_state != RCState::NotInitialized && self.rc_state != RCState::Disconnected {
             let _ = self.send_command(RCCommand::Disconnect);
+        }
+    }
+
+    fn close_at_deadline(&mut self, phase: &str) {
+        info!(
+            target: "audit",
+            _type = "SshSessionDeadline1",
+            session = %self.id,
+            phase,
+            "Closing SSH session at its deadline"
+        );
+        self.abort_transport();
+    }
+
+    fn abort_transport(&mut self) {
+        self.disconnect_token.cancel();
+        self.request_disconnect();
+        if let Some(closer) = self.client_closer.take() {
+            closer.close();
         }
     }
 
