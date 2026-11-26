@@ -1127,6 +1127,21 @@ class Test:
 
             assert "root:x:0:0:root" in open(f + "/passwd").read()
 
+        deadline = time.monotonic() + 10
+        with admin_client(f"https://localhost:{shared_wg.http_port}") as api:
+            while True:
+                logs = api.get_logs(sdk.GetLogsRequest(username=user.username, limit=200))
+                if any(
+                    (entry.values or {}).get("_type") == "SshSftpOperation1"
+                    and entry.values.get("operation") == "read"
+                    and entry.values.get("path") == "/etc/passwd"
+                    and int(entry.values.get("bytes_transferred") or 0) > 0
+                    for entry in logs
+                ):
+                    break
+                assert time.monotonic() < deadline, "SFTP read audit entry missing"
+                time.sleep(0.1)
+
     def test_insecure_protos(
         self,
         processes: ProcessManager,

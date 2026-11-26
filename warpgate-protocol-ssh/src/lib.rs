@@ -5,6 +5,7 @@ mod common;
 mod keys;
 pub mod known_hosts;
 mod server;
+mod sftp_audit;
 use std::fmt::Debug;
 
 use anyhow::Result;
