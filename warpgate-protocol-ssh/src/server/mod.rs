@@ -22,6 +22,7 @@ pub use session::ServerSession;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::time::Instant;
 use tracing::*;
 use warpgate_common::ListenEndpoint;
 use warpgate_common::helpers::net::accept_loop;
@@ -75,6 +76,7 @@ async fn _handle_connection(
     stream: TcpStream,
     remote_address: SocketAddr,
 ) -> Result<()> {
+    let accepted_at = Instant::now();
     let (session_handle, session_handle_rx) = SSHSessionHandle::new();
 
     let client_closer = ClientCloser::default();
@@ -116,6 +118,7 @@ async fn _handle_connection(
         session_handle_rx,
         event_rx,
         client_closer,
+        accepted_at,
     )
     .await
     {
