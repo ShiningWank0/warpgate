@@ -2728,12 +2728,10 @@ impl ServerSession {
                 else {
                     return Ok(AuthResult::Rejected);
                 };
-                if let Some(ttl) = self.ticket_max_ttl
-                    && !ticket.is_short_lived(ttl)
-                {
-                    return Ok(AuthResult::Rejected);
-                }
-                let Some(authorization) = ticket.spend(&self.services.db).await? else {
+                let Some(authorization) = ticket
+                    .spend_with_max_ttl(&self.services.db, self.ticket_max_ttl)
+                    .await?
+                else {
                     return Ok(AuthResult::Rejected);
                 };
                 info!(

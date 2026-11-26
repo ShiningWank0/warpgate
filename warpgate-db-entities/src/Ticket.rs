@@ -1,10 +1,15 @@
-use warpgate_common::{TargetId, UserId};
+use std::time::Duration;
+
+use sea_orm::QuerySelect;
 use sea_orm::entity::prelude::*;
 use sea_orm::sea_query::ExprTrait;
 use time::OffsetDateTime;
 use uuid::Uuid;
 use warpgate_common::helpers::hash::hash_secret;
-use warpgate_common::{Secret, WarpgateError};
+use warpgate_common::ticket_policy::{Redemption, decide_redemption};
+use warpgate_common::{Secret, TargetId, UserId, WarpgateError};
+
+use crate::begin_write;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "tickets")]
@@ -54,26 +59,43 @@ impl Related<super::Target::Entity> for Entity {
 
 impl ActiveModelBehavior for ActiveModel {}
 
-/// Atomic use spend
-///
-/// WarpgateError::InvalidTicket = no uses left
 pub async fn spend_use(db: &DatabaseConnection, ticket_id: Uuid) -> Result<(), WarpgateError> {
-    let ticket = Entity::find_by_id(ticket_id).one(db).await?;
-    let Some(ticket) = ticket else {
+    redeem(db, ticket_id, None).await
+}
+
+/// Check the current row and commit its spend under the same lock. The clock
+/// is sampled after the lock is obtained so contention cannot carry an old
+/// authorization decision across expiry.
+pub async fn redeem(
+    db: &DatabaseConnection,
+    ticket_id: Uuid,
+    max_ttl: Option<Duration>,
+) -> Result<(), WarpgateError> {
+    let transaction = begin_write(db).await?;
+    let Some(ticket) = Entity::find_by_id(ticket_id)
+        .lock_exclusive()
+        .one(&transaction)
+        .await?
+    else {
         return Err(WarpgateError::InvalidTicket(ticket_id));
     };
-    if ticket.uses_left.is_none() {
-        return Ok(());
+
+    match decide_redemption(
+        ticket.created.unix_timestamp_nanos(),
+        ticket.expiry.map(OffsetDateTime::unix_timestamp_nanos),
+        ticket.uses_left,
+        OffsetDateTime::now_utc().unix_timestamp_nanos(),
+        max_ttl.map(|ttl| ttl.as_nanos()),
+    ) {
+        Redemption::Denied => return Err(WarpgateError::InvalidTicket(ticket_id)),
+        Redemption::Unlimited => {}
+        Redemption::Spend { remaining } => {
+            let mut update: ActiveModel = ticket.into();
+            update.uses_left = sea_orm::Set(Some(remaining));
+            update.update(&transaction).await?;
+        }
     }
-    let spent = Entity::update_many()
-        .col_expr(Column::UsesLeft, Expr::col(Column::UsesLeft).sub(1))
-        .filter(Column::Id.eq(ticket_id))
-        .filter(Column::UsesLeft.gt(0))
-        .exec(db)
-        .await?;
-    if spent.rows_affected == 0 {
-        return Err(WarpgateError::InvalidTicket(ticket_id));
-    }
+    transaction.commit().await?;
     Ok(())
 }
 

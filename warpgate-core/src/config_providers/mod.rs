@@ -19,6 +19,7 @@ use warpgate_common::auth::{
     StoredCredential,
 };
 use warpgate_common::helpers::hash::hash_secret;
+use warpgate_common::ticket_policy::is_current;
 use warpgate_common::{
     Protocol, Secret, SpecificTarget, Target, TargetOptions, TargetOptionsVariant, User,
     WarpgateError,
@@ -339,8 +340,6 @@ pub async fn authorize_and_spend_ticket(
 pub struct ValidatedTicket {
     authorization: TargetAuthorization,
     id: Uuid,
-    uses_left: Option<i16>,
-    lifetime: Option<time::Duration>,
 }
 
 impl ValidatedTicket {
@@ -356,13 +355,6 @@ impl ValidatedTicket {
         self.authorization.target()
     }
 
-    pub fn is_short_lived(&self, max_ttl: std::time::Duration) -> bool {
-        self.uses_left == Some(1)
-            && self
-                .lifetime
-                .is_some_and(|lifetime| lifetime.is_positive() && lifetime <= max_ttl)
-    }
-
     /// For joining a session this ticket already opened, so no use is spent.
     /// `validate_ticket` has already re-checked expiry and revocation.
     pub fn join(self) -> TargetAuthorization {
@@ -373,10 +365,18 @@ impl ValidatedTicket {
         self,
         db: &DatabaseConnection,
     ) -> Result<Option<TargetAuthorization>, WarpgateError> {
-        match e::Ticket::spend_use(db, self.id).await {
+        self.spend_with_max_ttl(db, None).await
+    }
+
+    pub async fn spend_with_max_ttl(
+        self,
+        db: &DatabaseConnection,
+        max_ttl: Option<std::time::Duration>,
+    ) -> Result<Option<TargetAuthorization>, WarpgateError> {
+        match e::Ticket::redeem(db, self.id, max_ttl).await {
             Ok(()) => Ok(Some(self.authorization)),
             Err(WarpgateError::InvalidTicket(_)) => {
-                warn!(ticket_id = %self.id, "Ticket is revoked or used up");
+                warn!(ticket_id = %self.id, "Ticket cannot be redeemed");
                 Ok(None)
             }
             Err(error) => Err(error),
@@ -407,9 +407,10 @@ pub async fn validate_ticket(
             .await?
     };
     if let Some(ticket) = ticket {
-        if let Some(datetime) = ticket.expiry
-            && datetime < OffsetDateTime::now_utc()
-        {
+        if !is_current(
+            ticket.expiry.map(OffsetDateTime::unix_timestamp_nanos),
+            OffsetDateTime::now_utc().unix_timestamp_nanos(),
+        ) {
             warn!("Ticket has expired: {}", &ticket.id);
             return Ok(None);
         }
@@ -453,8 +454,6 @@ pub async fn validate_ticket(
         // role check — that's what makes it a ticket.
         Ok(Some(ValidatedTicket {
             id: ticket.id,
-            uses_left: ticket.uses_left,
-            lifetime: ticket.expiry.map(|expiry| expiry - ticket.created),
             authorization: TargetAuthorization {
                 user_info: (&user).into(),
                 target: SpecificTarget::any(target),
@@ -683,6 +682,86 @@ mod tests {
                 .uses_left,
             Some(0)
         );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn security_invariant_redemption_rechecks_expiry_for_limited_and_unlimited_tickets() {
+        use sea_orm::{ActiveModelTrait, Set};
+
+        for uses_left in [Some(1), None] {
+            let (db, login_protection, _, ticket_id, secret) =
+                ticket_fixture(false, uses_left).await;
+
+            let validated = validate_ticket(&db, &login_protection, &secret, None, Protocol::Http)
+                .await
+                .unwrap()
+                .unwrap();
+
+            e::Ticket::ActiveModel {
+                id: Set(ticket_id),
+                expiry: Set(Some(OffsetDateTime::now_utc() - time::Duration::seconds(1))),
+                ..Default::default()
+            }
+            .update(&db)
+            .await
+            .unwrap();
+
+            assert!(validated.spend(&db).await.unwrap().is_none());
+            let row = e::Ticket::Entity::find_by_id(ticket_id)
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.uses_left, uses_left);
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn security_invariant_short_lived_policy_uses_the_locked_row() {
+        use sea_orm::{ActiveModelTrait, Set};
+
+        let (db, login_protection, _, ticket_id, secret) = ticket_fixture(false, Some(1)).await;
+        let issued = OffsetDateTime::now_utc() - time::Duration::seconds(30);
+        let expires = issued + time::Duration::minutes(2);
+        e::Ticket::ActiveModel {
+            id: Set(ticket_id),
+            created: Set(issued),
+            expiry: Set(Some(expires)),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        let max_ttl = Some(std::time::Duration::from_secs(120));
+        let validate = || validate_ticket(&db, &login_protection, &secret, None, Protocol::Http);
+        let prior = validate().await.unwrap().unwrap();
+
+        // A refund can change the remaining-use count between validation and spend.
+        e::Ticket::refund_use(&db, ticket_id).await.unwrap();
+        assert!(
+            prior
+                .spend_with_max_ttl(&db, max_ttl)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let row = e::Ticket::Entity::find_by_id(ticket_id)
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.uses_left, Some(2));
+
+        e::Ticket::spend_use(&db, ticket_id).await.unwrap();
+        let a = validate().await.unwrap().unwrap();
+        let b = validate().await.unwrap().unwrap();
+        let (a, b) = tokio::join!(
+            a.spend_with_max_ttl(&db, max_ttl),
+            b.spend_with_max_ttl(&db, max_ttl)
+        );
+        assert_ne!(a.unwrap().is_some(), b.unwrap().is_some());
     }
 
     struct FixedPolicy(bool);
