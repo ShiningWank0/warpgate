@@ -1,0 +1,50 @@
+data_dir = "/var/lib/vector"
+
+[sources.journal]
+type = "journald"
+include_units = ${jsonencode(journal_units)}
+current_boot_only = false
+
+[transforms.normalized]
+type = "remap"
+inputs = ["journal"]
+source = '''
+parsed, err = parse_json(.message)
+if err == null && is_object(parsed) {
+  .audit = parsed
+  del(.message)
+}
+'''
+
+[sinks.archive]
+type = "aws_s3"
+inputs = ["normalized"]
+bucket = ${jsonencode(bucket)}
+region = ${jsonencode(region)}
+%{ if endpoint != "" ~}
+endpoint = ${jsonencode(endpoint)}
+force_path_style = true
+%{ endif ~}
+key_prefix = "audit/%Y/%m/%d/"
+filename_append_uuid = true
+compression = "gzip"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+batch.max_bytes = 1048576
+batch.timeout_secs = 15
+buffer.type = "disk"
+buffer.max_size = 536870912
+buffer.when_full = "block"
+healthcheck.enabled = false
+
+%{ if loki != "" ~}
+[sinks.loki]
+type = "loki"
+inputs = ["normalized"]
+endpoint = ${jsonencode(loki)}
+encoding.codec = "json"
+labels.job = "warpgate-audit"
+buffer.type = "disk"
+buffer.max_size = 268435488
+buffer.when_full = "drop_newest"
+%{ endif ~}
