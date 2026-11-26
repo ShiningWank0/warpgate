@@ -8,6 +8,7 @@ use warpgate_common::UserSessionId;
 
 // OpenSSH's limit is 256 KiB. Allow headroom for other v3 implementations.
 const MAX_PACKET_SIZE: usize = 512 * 1024;
+const LENGTH_FIELD_SIZE: usize = size_of::<u32>();
 const MAX_IN_FLIGHT: usize = 1024;
 const MAX_HANDLES: usize = 1024;
 const MAX_PATH_SIZE: usize = 4096;
@@ -23,27 +24,43 @@ impl Frames {
         mut on_frame: impl FnMut(&[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
         while !data.is_empty() {
-            if self.0.len() < 4 {
-                let take = data.len().min(4 - self.0.len());
-                self.0.extend_from_slice(&data[..take]);
-                data = &data[take..];
-                if self.0.len() < 4 {
+            if self.0.len() < LENGTH_FIELD_SIZE {
+                data = self.fill_to_length(data, LENGTH_FIELD_SIZE)?;
+                if self.0.len() < LENGTH_FIELD_SIZE {
                     break;
                 }
             }
-            let size = self.0.as_ref().get_u32() as usize;
+            let size =
+                self.0
+                    .as_ref()
+                    .try_get_u32()
+                    .map_err(|_| invalid("truncated SFTP packet length"))? as usize;
             if !(1..=MAX_PACKET_SIZE).contains(&size) {
                 return Err(invalid("unsupported SFTP packet size"));
             }
-            let take = data.len().min(size + 4 - self.0.len());
-            self.0.extend_from_slice(&data[..take]);
-            data = &data[take..];
-            if self.0.len() == size + 4 {
-                on_frame(&self.0[4..])?;
+            let frame_len = LENGTH_FIELD_SIZE + size;
+            data = self.fill_to_length(data, frame_len)?;
+            if self.0.len() == frame_len {
+                let payload = self
+                    .0
+                    .get(LENGTH_FIELD_SIZE..)
+                    .ok_or_else(|| invalid("missing SFTP packet payload"))?;
+                on_frame(payload)?;
                 self.0.clear();
             }
         }
         Ok(())
+    }
+
+    fn fill_to_length<'a>(&mut self, data: &'a [u8], len: usize) -> io::Result<&'a [u8]> {
+        let needed = len
+            .checked_sub(self.0.len())
+            .ok_or_else(|| invalid("buffer is larger than the SFTP frame"))?;
+        let (chunk, rest) = data
+            .split_at_checked(needed.min(data.len()))
+            .ok_or_else(|| invalid("invalid SFTP frame boundary"))?;
+        self.0.extend_from_slice(chunk);
+        Ok(rest)
     }
 }
 
@@ -55,10 +72,12 @@ fn string<'a>(packet: &mut &'a [u8], max: usize) -> io::Result<&'a [u8]> {
     let size = packet
         .try_get_u32()
         .map_err(|_| invalid("truncated SFTP string length"))? as usize;
-    if size > max || size > packet.len() {
+    if size > max {
         return Err(invalid("invalid SFTP string size"));
     }
-    let (value, rest) = packet.split_at(size);
+    let (value, rest) = packet
+        .split_at_checked(size)
+        .ok_or_else(|| invalid("truncated SFTP string"))?;
     *packet = rest;
     Ok(value)
 }
@@ -90,7 +109,9 @@ struct Request {
 
 impl Protocol {
     fn request(&mut self, mut packet: &[u8]) -> io::Result<()> {
-        let kind = packet.get_u8();
+        let kind = packet
+            .try_get_u8()
+            .map_err(|_| invalid("missing SFTP packet type"))?;
         if kind == 1 {
             return Ok(()); // SSH_FXP_INIT. The server selects the version.
         }
@@ -186,7 +207,9 @@ impl Protocol {
         mut packet: &[u8],
         mut report: impl FnMut(Request, u32, Option<u32>),
     ) -> io::Result<()> {
-        let kind = packet.get_u8();
+        let kind = packet
+            .try_get_u8()
+            .map_err(|_| invalid("missing SFTP packet type"))?;
         if kind == 2 {
             self.v3 = packet.try_get_u32().ok() == Some(3);
             return if self.v3 {
@@ -311,6 +334,24 @@ mod tests {
         bytes.put_u32(id);
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    #[test]
+    fn invalid_packet_lengths_never_dispatch_a_frame() {
+        for size in [0, MAX_PACKET_SIZE as u32 + 1, u32::MAX] {
+            let mut frames = Frames::default();
+            let mut dispatched = 0;
+            let mut on_frame = |_: &[u8]| {
+                dispatched += 1;
+                Ok(())
+            };
+            let length = size.to_be_bytes();
+            let (prefix, suffix) = length.split_at(2);
+            frames.feed(prefix, &mut on_frame).unwrap();
+            let error = frames.feed(suffix, &mut on_frame).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            assert_eq!(dispatched, 0);
+        }
     }
 
     #[test]
