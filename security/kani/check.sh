@@ -33,13 +33,15 @@ mkdir "$work_dir/src"
     cp --parents -- \
         security/kani/ticket_redemption.rs \
         security/kani/ssh_session_deadline.rs \
+        security/kani/mfa_policy.rs \
         warpgate-common/src/ticket_policy.rs \
+        warpgate-common/src/auth/mfa_policy.rs \
         warpgate-protocol-ssh/src/server/session_deadline.rs \
         "$work_dir/src"
 )
 cd "$work_dir/src"
 status=0
-for harness in ticket_redemption ssh_session_deadline; do
+for harness in ticket_redemption ssh_session_deadline mfa_policy; do
     printf '\nVerifying %s\n' "$harness"
     if ! RUSTUP_TOOLCHAIN="$toolchain" "$bundle/bin/kani-driver" "security/kani/$harness.rs" \
         --output-format terse -Z concrete-playback --concrete-playback print; then
