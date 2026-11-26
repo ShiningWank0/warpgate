@@ -24,8 +24,8 @@ jobs:
           persist-credentials: false
       - run: bash security/kani/check.sh
 
-  test-ticket-transactions:
-    name: SQLite ticket transaction tests
+  test-security-regressions:
+    name: Authentication and SQLite regressions
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -34,4 +34,4 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: cargo test --locked -p warpgate-core --features sqlite --lib security_invariant
+      - run: cargo test --locked -p warpgate-common -p warpgate-core --features warpgate-core/sqlite --lib security_invariant

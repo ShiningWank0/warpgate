@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::CredentialKind;
+use super::mfa_policy::missing_mfa_factors;
 use crate::Protocol;
 
 pub enum CredentialPolicyResponse {
@@ -34,6 +35,7 @@ pub struct PerProtocolCredentialPolicy {
 pub struct MfaEnforcementPolicy {
     pub inner: Box<dyn CredentialPolicy + Send + Sync>,
     pub required: HashMap<Protocol, CredentialKind>,
+    pub supported_credential_types: HashSet<CredentialKind>,
 }
 
 impl CredentialPolicy for AnySingleCredentialPolicy {
@@ -105,14 +107,33 @@ impl CredentialPolicy for MfaEnforcementPolicy {
         let Some(&factor) = self.required.get(&protocol) else {
             return response;
         };
-        if valid_credentials.contains(&factor) {
+        let missing = missing_mfa_factors(
+            valid_credentials.contains(&factor),
+            factor == CredentialKind::Totp,
+            valid_credentials
+                .iter()
+                .any(|kind| *kind != CredentialKind::Totp),
+        );
+        if !missing.required && !missing.primary {
             return response;
         }
         let mut needed = match response {
             CredentialPolicyResponse::Ok => HashSet::new(),
             CredentialPolicyResponse::Need(needed) => needed,
         };
-        needed.insert(factor);
+        if missing.required {
+            needed.insert(factor);
+        }
+        // The account policy can explicitly require only OTP. With global
+        // MFA enabled, offer a separate factor the protocol and user support.
+        if missing.primary && !needed.iter().any(|kind| *kind != CredentialKind::Totp) {
+            needed.extend(
+                self.supported_credential_types
+                    .iter()
+                    .copied()
+                    .filter(|kind| *kind != CredentialKind::Totp),
+            );
+        }
         CredentialPolicyResponse::Need(needed)
     }
 }
@@ -128,6 +149,7 @@ mod tests {
         MfaEnforcementPolicy {
             inner,
             required: required.iter().copied().collect(),
+            supported_credential_types: kinds(&[CredentialKind::Password, CredentialKind::Totp]),
         }
     }
 
@@ -229,6 +251,44 @@ mod tests {
             needed,
             kinds(&[CredentialKind::Password, CredentialKind::PublicKey])
         );
+    }
+
+    #[test]
+    fn security_invariant_mfa_requires_primary_with_otp_only_account_policy() {
+        let inner = Box::new(AllCredentialsPolicy {
+            required_credential_types: kinds(&[CredentialKind::Totp]),
+            supported_credential_types: kinds(&[CredentialKind::Password, CredentialKind::Totp]),
+        });
+        let policy = wrapper(inner, &[(Protocol::Ssh, CredentialKind::Totp)]);
+        let CredentialPolicyResponse::Need(needed) =
+            policy.is_sufficient(Protocol::Ssh, &kinds(&[CredentialKind::Totp]))
+        else {
+            panic!("expected a separate credential");
+        };
+        assert_eq!(needed, kinds(&[CredentialKind::Password]));
+
+        assert!(matches!(
+            policy.is_sufficient(
+                Protocol::Ssh,
+                &kinds(&[CredentialKind::Password, CredentialKind::Totp]),
+            ),
+            CredentialPolicyResponse::Ok
+        ));
+    }
+
+    #[test]
+    fn security_invariant_mfa_accepts_verified_browser_approval() {
+        let policy = wrapper(
+            permissive_inner(),
+            &[(Protocol::Postgres, CredentialKind::WebUserApproval)],
+        );
+        assert!(matches!(
+            policy.is_sufficient(
+                Protocol::Postgres,
+                &kinds(&[CredentialKind::WebUserApproval])
+            ),
+            CredentialPolicyResponse::Ok
+        ));
     }
 
     #[test]

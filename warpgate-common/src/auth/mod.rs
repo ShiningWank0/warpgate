@@ -1,4 +1,5 @@
 mod cred;
+mod mfa_policy;
 mod policy;
 mod selector;
 mod state;

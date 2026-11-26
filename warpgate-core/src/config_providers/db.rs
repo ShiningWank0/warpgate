@@ -517,6 +517,7 @@ impl ConfigProvider for DatabaseConfigProvider {
             Ok(Some(Box::new(MfaEnforcementPolicy {
                 inner: policy,
                 required: mfa_factors,
+                supported_credential_types,
             })))
         }
     }
