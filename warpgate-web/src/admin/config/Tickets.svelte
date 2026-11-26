@@ -257,7 +257,9 @@
                                     TicketRequestStatus.Approved &&
                                     !request.ticketId}
                                     <small class="d-block text-info">
-                                        Awaiting user activation
+                                        {request.permanent
+                                            ? 'Approved for an access configuration change'
+                                            : 'Awaiting user activation'}
                                     </small>
                                 {/if}
                                 {#if request.denyReason}

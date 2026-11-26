@@ -25,6 +25,11 @@ Verify the messages for the installed OpenSSH version and restrict access to
 these logs. Debug logging can also contain other environment values. In
 production use the narrowest trusted collection available on the target.
 
+When the target authenticates Warpgate with an SSH certificate, its existing
+signed key ID has the form `warpgate:<username>:<session UUID>` and appears
+in authoritative target authentication logs. Certificate authentication
+also supports connection-level correlation for port-forward-only use.
+
 Within Warpgate, the `SshSessionLinked1` audit event maps the user-session
 UUID to the `target_session_id` used by its recordings. The
 `SshExecRequested1` event records the original exec request.

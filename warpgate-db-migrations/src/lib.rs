@@ -106,6 +106,7 @@ mod m00098_gitops_sync;
 mod m00099_unique_admin_role_names;
 mod m00100_admin_role_builtin;
 mod m00101_ticket_notification_outbox;
+mod m00102_permanent_access_requests;
 
 pub(crate) mod helpers;
 
@@ -216,6 +217,7 @@ impl MigratorTrait for Migrator {
             Box::new(m00099_unique_admin_role_names::Migration),
             Box::new(m00100_admin_role_builtin::Migration),
             Box::new(m00101_ticket_notification_outbox::Migration),
+            Box::new(m00102_permanent_access_requests::Migration),
         ]
     }
 }

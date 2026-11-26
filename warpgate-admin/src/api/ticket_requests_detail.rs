@@ -1,4 +1,4 @@
-use poem_openapi::param::Path;
+use poem_openapi::param::{Path, Query};
 use poem_openapi::payload::Json;
 use poem_openapi::{ApiResponse, Object, OpenApi};
 use uuid::Uuid;
@@ -52,11 +52,12 @@ impl Api {
         &self,
         admin: AdminContext,
         id: Path<Uuid>,
+        permanent: Query<Option<bool>>,
     ) -> Result<ApproveTicketRequestResponse, WarpgateError> {
         admin.require(AdminPermission::TicketRequestsManage)?;
 
         let uid = admin_user_id(&admin);
-        match approve_ticket_request(&admin.services().db, id.0, uid).await? {
+        match approve_ticket_request(&admin.services().db, id.0, uid, permanent.0).await? {
             Some(request) => {
                 match batch_resolve_ticket_request_names(&admin.services().db, vec![request])
                     .await?

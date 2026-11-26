@@ -229,8 +229,13 @@ async fn deliver_due(
         // Reasons may contain sensitive content. Keep them in Warpgate.
         let user: String = user.chars().take(100).collect();
         let target: String = target.chars().take(100).collect();
+        let scope = if request.permanent {
+            "permanent"
+        } else {
+            "temporary"
+        };
         let message = format!(
-            "Warpgate temporary access request\nUser: {user}\nTarget: {target}\nRequest: {request_id}"
+            "Warpgate {scope} access request\nUser: {user}\nTarget: {target}\nRequest: {request_id}"
         );
         let result = client
             .post(url.clone())

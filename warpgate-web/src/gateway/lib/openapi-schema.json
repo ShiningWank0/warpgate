@@ -1780,6 +1780,9 @@
             "type": "integer",
             "format": "int64"
           },
+          "permanent": {
+            "type": "boolean"
+          },
           "description": {
             "type": "string"
           }
@@ -2670,6 +2673,7 @@
           "id",
           "user_id",
           "target_id",
+          "permanent",
           "description",
           "status",
           "created"
@@ -2690,6 +2694,9 @@
           "requested_duration_seconds": {
             "type": "integer",
             "format": "int64"
+          },
+          "permanent": {
+            "type": "boolean"
           },
           "description": {
             "type": "string"
@@ -2726,6 +2733,7 @@
           "user_id",
           "target_id",
           "target_name",
+          "permanent",
           "description",
           "status",
           "created"
@@ -2749,6 +2757,9 @@
           "requested_duration_seconds": {
             "type": "integer",
             "format": "int64"
+          },
+          "permanent": {
+            "type": "boolean"
           },
           "description": {
             "type": "string"
