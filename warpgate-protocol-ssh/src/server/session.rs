@@ -54,6 +54,7 @@ use super::event_intake::EventIntake;
 use super::russh_handler::ServerHandlerEvent;
 use super::service_output::ServiceOutput;
 use super::session_handle::SessionHandleCommand;
+use crate::common::{CHANNEL_ID_ENV, SESSION_ID_ENV};
 use crate::server::get_allowed_auth_methods;
 use crate::server::service_output::{VisualConnectionChainItem, paint_fg};
 use crate::server::target_menu::{MenuEvent, spawn_target_menu_loop};
@@ -351,7 +352,7 @@ impl ServerSession {
             user_info: None,
             authorized_identity: None,
             session_handle: None,
-            channels: ChannelRegistry::new(),
+            channels: ChannelRegistry::new(id),
             deferred_server_events: vec![],
             rc_tx: rc_handles.command_tx.clone(),
             rc_abort_tx: rc_handles.abort_tx,
@@ -1157,6 +1158,13 @@ impl ServerSession {
         &mut self,
         admitted: AdmittedTarget<TargetSSHOptions>,
     ) -> Result<()> {
+        info!(
+            target: "audit",
+            _type = "SshSessionLinked1",
+            session = %self.id,
+            target_session_id = %admitted.id(),
+            "Linked SSH connection to target session"
+        );
         let awaiting = std::mem::replace(
             &mut self.target_session,
             TargetSessionState::Stamped(StampedTargetSession {
@@ -1969,7 +1977,14 @@ impl ServerSession {
         let command = std::str::from_utf8(&data).inspect_err(|_| {
             error!(channel=%channel_id, ?data, "Requested exec - invalid UTF-8");
         })?;
-        info!(channel=%channel_id, command=%command, "Exec command");
+        info!(
+            target: "audit",
+            _type = "SshExecRequested1",
+            session = %self.id,
+            channel_id = %channel_id,
+            %command,
+            "SSH exec requested"
+        );
 
         let is_scp = command == "scp" || command.starts_with("scp ");
         let _ = self.maybe_connect_remote().await;
@@ -2094,7 +2109,11 @@ impl ServerSession {
         value: String,
     ) -> Result<()> {
         let channel_id = self.map_channel(server_channel_id)?;
-        debug!(channel=%channel_id, %name, %value, "Environment");
+        if matches!(name.as_str(), SESSION_ID_ENV | CHANNEL_ID_ENV) {
+            warn!(channel=%channel_id, %name, "Ignored a client-supplied SSH audit identifier");
+            return Ok(());
+        }
+        debug!(channel=%channel_id, %name, "Forwarding environment request");
         self.send_command(RCCommand::Channel(
             channel_id,
             ChannelOperation::RequestEnv(name, value),

@@ -1361,6 +1361,17 @@ impl RemoteClient {
                 }
             };
 
+            if is_session {
+                // Queue the identifiers before any client-controlled channel
+                // operation. Targets opt in to receiving them with AcceptEnv.
+                channel
+                    .set_env(false, crate::common::SESSION_ID_ENV, session_id.to_string())
+                    .await?;
+                channel
+                    .set_env(false, crate::common::CHANNEL_ID_ENV, channel_id.to_string())
+                    .await?;
+            }
+
             if let Some(reply) = reply {
                 let _ = reply.send(Ok(()));
             }
