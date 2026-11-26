@@ -6,7 +6,7 @@ if [[ "$(uname -s)-$(uname -m)" != "Linux-x86_64" ]]; then
     exit 1
 fi
 
-source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
 version=kani-0.68.0
@@ -26,5 +26,24 @@ sysroot=$(rustup run "$toolchain" rustc --print sysroot)
 export PATH="$bundle/bin:$PATH"
 export LD_LIBRARY_PATH="$sysroot/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-cd "$work_dir"
-RUSTUP_TOOLCHAIN="$toolchain" "$bundle/bin/kani-driver" "$source_dir/ticket_redemption.rs"
+# The standalone driver can leave build files next to its input on failure.
+mkdir "$work_dir/src"
+(
+    cd "$repo_dir"
+    cp --parents -- \
+        security/kani/ticket_redemption.rs \
+        security/kani/ssh_session_deadline.rs \
+        warpgate-common/src/ticket_policy.rs \
+        warpgate-protocol-ssh/src/server/session_deadline.rs \
+        "$work_dir/src"
+)
+cd "$work_dir/src"
+status=0
+for harness in ticket_redemption ssh_session_deadline; do
+    printf '\nVerifying %s\n' "$harness"
+    if ! RUSTUP_TOOLCHAIN="$toolchain" "$bundle/bin/kani-driver" "security/kani/$harness.rs" \
+        --output-format terse -Z concrete-playback --concrete-playback print; then
+        status=1
+    fi
+done
+exit "$status"
